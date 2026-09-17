@@ -7,8 +7,12 @@
  * + alert color at the host threshold. Tolerant empty/error states.
  *
  * Acceptance-critical rules (SPIKE §6 amendments):
- * - commandcode card shows probe + burn ledger ONLY; NO percentage is ever
- *   rendered when `burn.percent` is null (budget 0) — never a fake %.
+ * - commandcode now renders real quota items (5h window + weekly with
+ *   reset timers, balance, plan, spend, tokens) — identical pattern to
+ *   claude/codex/opencode-go. Probe line only appears after an explicit
+ *   probe; "Not probed yet" placeholder removed.
+ * - burn ledger remains but is supplementary below the items.
+ * - Never render a fake % when `burn.percent` is null (budget 0).
  * - Hidden toggle unmounts BOTH the pill/ring AND the panel (render null).
  *
  * @module dsh-subscription-overlay/client/SubscriptionPanel
@@ -493,7 +497,7 @@ function CommandcodeCard({
   const probing = state.probing === 'commandcode';
   const probeLine =
     probe === undefined
-      ? t('probe.state.unknown')
+      ? ''
       : probe.ok
         ? t(
             probe.models !== undefined && probe.models.length > 0 ? 'probe.ok' : 'probe.okNoModels',
@@ -518,14 +522,28 @@ function CommandcodeCard({
           {probing ? '…' : t('probe.run')}
         </button>
       </div>
-      <span className={`dso-probe-line${probe !== undefined && !probe.ok ? ' dso-probe-line--err' : ''}`}>
-        {probeLine}
-      </span>
-      {probe !== undefined && probe.ok && probe.models !== undefined && probe.models.length > 0 && (
-        <span className="dso-provider-msg">{probe.models.join(' · ')}</span>
-      )}
       {provider.message != null && provider.message !== '' && (
         <span className="dso-provider-msg">{provider.message}</span>
+      )}
+      {provider.status === 'ok' && Array.isArray(provider.items) && provider.items.length > 0 && (
+        <div className="dso-items">
+          {provider.items.map((item, i) => (
+            <UsageRow key={`${item.label}-${i}`} item={item} alertPct={state.alertPct} t={t} />
+          ))}
+        </div>
+      )}
+      {provider.status === 'ok' && (!Array.isArray(provider.items) || provider.items.length === 0) && probe === undefined && (
+        <span className="dso-provider-msg">{t('panel.empty')}</span>
+      )}
+      {probe !== undefined && (
+        <>
+          <span className={`dso-probe-line${!probe.ok ? ' dso-probe-line--err' : ''}`}>
+            {probeLine}
+          </span>
+          {probe.ok && probe.models !== undefined && probe.models.length > 0 && (
+            <span className="dso-provider-msg">{probe.models.join(' · ')}</span>
+          )}
+        </>
       )}
       {burn !== undefined && (
         <div className="dso-burn">
