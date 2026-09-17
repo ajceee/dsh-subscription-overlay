@@ -196,23 +196,28 @@ async function fetchCodex(token: string): Promise<ProviderRow> {
     const b: any = await resp.json()
     const items: QuotaItem[] = []
 
-    // wham/usage raw shape: { rate_limit: { primary_window: { used_percent, limit_window_seconds, reset_at }, secondary_window: {...} } }
-    // The Python helper script normalises this to { primary_pct, primary_reset_at, secondary_pct, secondary_reset_at }
-    // but we hit the raw API, so we handle both shapes.
+    // wham/usage raw shape:
+    //   { rate_limit: { primary_window: { used_percent, limit_window_seconds, reset_at(unix-s) },
+    //                   secondary_window: { … } } }
+    // reset_at is a Unix seconds integer (e.g. 1789643729), not an ISO string.
     const rl = b?.rate_limit ?? b
     const windowPct = (w: any): number | undefined => num(w?.used_percent) ?? num(w?.usedPercent)
-    const windowReset = (w: any): string | undefined =>
-      typeof w?.reset_at === 'string' ? w.reset_at : typeof w?.resetsAt === 'string' ? w.resetsAt : undefined
-
+    // Normalise reset_at: unix-seconds int → ISO string; ISO string → pass through
+    const windowReset = (w: any): string | undefined => {
+      const v = w?.reset_at ?? w?.resetsAt
+      if (typeof v === 'number' && v > 0) return new Date(v < 1e12 ? v * 1000 : v).toISOString()
+      if (typeof v === 'string' && v) return v
+      return undefined
+    }
     const pri = rl?.primary_window ?? null
     const sec = rl?.secondary_window ?? null
-    const priPct = pri !== null ? windowPct(pri) : (num(b?.primary_pct))
-    const secPct = sec !== null ? windowPct(sec) : (num(b?.secondary_pct))
-    const priReset = pri !== null ? windowReset(pri) : (b?.primary_reset_at ?? b?.primary_reset)
-    const secReset = sec !== null ? windowReset(sec) : (b?.secondary_reset_at ?? b?.secondary_reset)
-
-    if (priPct !== undefined) items.push({ label: 'primary', percent: priPct, resetAt: priReset })
-    if (secPct !== undefined) items.push({ label: 'secondary', percent: secPct, resetAt: secReset })
+    const priPct   = pri !== null ? windowPct(pri) : num(b?.primary_pct)
+    const secPct   = sec !== null ? windowPct(sec) : num(b?.secondary_pct)
+    const priReset = pri !== null ? windowReset(pri) : undefined
+    const secReset = sec !== null ? windowReset(sec) : undefined
+    // primary_window = 5-hour rolling; secondary_window = weekly (per Codex plan docs)
+    if (priPct !== undefined) items.push({ label: '5h window', percent: priPct, resetAt: priReset })
+    if (secPct !== undefined) items.push({ label: 'weekly',    percent: secPct, resetAt: secReset })
     return { id: 'codex', label: 'Codex', status: 'ok', items }
   } catch (err) {
     return { id: 'codex', label: 'Codex', status: 'error', message: err instanceof Error ? err.message : String(err), items: [] }
@@ -242,9 +247,9 @@ async function fetchOpencodeGo(token: string): Promise<ProviderRow> {
         ?? (typeof normalised?.resets_at === 'string' ? normalised.resets_at : undefined)
       if (pct !== undefined) items.push({ label, percent: pct, resetAt })
     }
-    pushWindow('rolling (5h)', usage?.rolling, b?.five_hour)
-    pushWindow('weekly', usage?.weekly, b?.seven_day)
-    pushWindow('monthly', usage?.monthly, b?.monthly)
+    pushWindow('5h window', usage?.rolling, b?.five_hour)
+    pushWindow('weekly',    usage?.weekly,   b?.seven_day)
+    pushWindow('monthly',   usage?.monthly,  b?.monthly)
     return { id: 'opencode-go', label: 'OpenCode Go', status: 'ok', items }
   } catch (err) {
     return { id: 'opencode-go', label: 'OpenCode Go', status: 'error', message: err instanceof Error ? err.message : String(err), items: [] }
@@ -252,66 +257,100 @@ async function fetchOpencodeGo(token: string): Promise<ProviderRow> {
 }
 
 /**
- * Fetch CommandCode usage from the confirmed live endpoint:
- *   GET https://api.commandcode.ai/alpha/usage/summary
- * Response: { totalTokens, totalTokensIn, totalTokensOut, totalCount,
- *             totalCredits, totalMonthlyCredits, totalPurchasedCredits,
- *             totalFreeCredits, successRate, completedCount, failedCount,
- *             averageCost, periodBasis }
+ * Fetch CommandCode quota from the same four alpha endpoints the pi-commandcode-provider
+ * and the cmd /usage command use (source: github.com/patlux/pi-commandcode-provider):
  *
- * No quota cap or reset date is returned by this endpoint — Command Code does
- * not expose a percentage-based window meter via API (only the Studio dashboard
- * shows it).  We surface spend + token counts as display items, and optionally
- * compute a spend-% against the user-configured monthly budget.
+ *   GET /alpha/whoami                 → { user: { userName }, org: { id } | null }
+ *   GET /alpha/billing/credits        → { credits: { monthlyCredits, … },
+ *                                         windowLimits: {
+ *                                           fiveHour: { used, cap, resetAt(ms) },
+ *                                           weekly:   { used, cap, resetAt(ms) } } }
+ *   GET /alpha/billing/subscriptions  → { data: { planId, currentPeriodStart/End } }
+ *   GET /alpha/usage/summary          → { totalCost, totalTokens, totalCount, … }
+ *
+ * windowLimits gives rolling percent = used/cap*100 + resetAt — identical pattern to
+ * Claude (5h/7d) and Codex (primary/secondary).
  */
 export async function fetchCommandcode(apiKey: string): Promise<ProviderRow> {
+  const base = 'https://api.commandcode.ai'
+  const headers = { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' }
+  const sig = AbortSignal.timeout(15_000)
+  const get = async (path: string) => {
+    const r = await fetch(`${base}${path}`, { headers, signal: sig })
+    if (!r.ok) throw Object.assign(new Error(`HTTP ${r.status}`), { status: r.status })
+    return r.json() as Promise<any>
+  }
+
   try {
-    const resp = await fetch('https://api.commandcode.ai/alpha/usage/summary', {
-      headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
-      signal: AbortSignal.timeout(12_000),
-    })
-    if (!resp.ok) {
-      const auth = resp.status === 401 || resp.status === 403
-      return {
-        id: 'commandcode', label: 'CommandCode', status: 'error',
-        message: auth ? 'auth failed — check API key in DSH credentials' : `HTTP ${resp.status}`,
-        items: [],
-      }
-    }
-    const b: any = await resp.json()
+    // 1. whoami — resolve orgId for scoped requests
+    const whoami = await get('/alpha/whoami')
+    const orgId: string | null = whoami?.org?.id ?? null
+    const q = orgId ? `?orgId=${orgId}` : ''
+
+    // 2+3. credits (window meters) + subscriptions in parallel
+    const [creditsRaw, subsRaw] = await Promise.allSettled([
+      get(`/alpha/billing/credits${q}`),
+      get(`/alpha/billing/subscriptions${q}`),
+    ])
+
+    const credits = creditsRaw.status === 'fulfilled' ? creditsRaw.value : null
+    const subs    = subsRaw.status === 'fulfilled'    ? subsRaw.value    : null
+
+    // Period start for scoped summary
+    const periodStart: string | undefined = subs?.data?.currentPeriodStart ?? undefined
+    const summaryQ = [orgId ? `orgId=${orgId}` : '', periodStart ? `since=${periodStart}` : '']
+      .filter(Boolean).join('&')
+    const summaryPath = `/alpha/usage/summary${summaryQ ? `?${summaryQ}` : ''}`
+
+    // 4. usage/summary
+    const summaryRaw = await get(summaryPath).catch(() => null)
+
     const items: QuotaItem[] = []
 
-    // Credits spent this billing period
-    const spent = num(b?.totalMonthlyCredits) ?? num(b?.totalCredits)
+    // Rolling window meters from billing/credits — same pattern as Claude 5h/7d
+    const wl = credits?.windowLimits
+    const pushWindow = (label: string, w: any) => {
+      if (!w || typeof w.used !== 'number' || typeof w.cap !== 'number' || w.cap === 0) return
+      const pct = Math.round((w.used / w.cap) * 100)
+      // resetAt is a ms-epoch integer — convert to ISO string for the panel's resetText()
+      const resetAt = typeof w.resetAt === 'number'
+        ? new Date(w.resetAt).toISOString()
+        : typeof w.resetAt === 'string' ? w.resetAt : undefined
+      items.push({ label, percent: pct, resetAt })
+    }
+    pushWindow('5h window', wl?.fiveHour)
+    pushWindow('weekly',    wl?.weekly)
+
+    // Credit balance (remaining)
+    const monthly    = num(credits?.credits?.monthlyCredits)
+    const purchased  = num(credits?.credits?.purchasedCredits)
+    const free       = num(credits?.credits?.freeCredits)
+    const remaining  = (monthly ?? 0) + (purchased ?? 0) + (free ?? 0)
+    if (monthly !== undefined)
+      items.push({ label: 'balance', display: `${remaining.toFixed(2)} remaining` })
+
+    // Plan
+    const planId: string | undefined = subs?.data?.planId
+    if (planId) items.push({ label: 'plan', display: planId })
+
+    // Period spend + tokens from usage/summary
+    const spent = num(summaryRaw?.totalMonthlyCredits) ?? num(summaryRaw?.totalCost)
     if (spent !== undefined)
       items.push({ label: 'spent (period)', display: `${spent.toFixed(4)}` })
-
-    // Token counts
-    const tokTotal = num(b?.totalTokens)
+    const tokTotal = num(summaryRaw?.totalTokens)
     if (tokTotal !== undefined)
       items.push({ label: 'tokens (period)', display: fmtTokens(tokTotal) })
-
-    const tokIn = num(b?.totalTokensIn)
-    const tokOut = num(b?.totalTokensOut)
-    if (tokIn !== undefined && tokOut !== undefined) {
-      items.push({ label: 'tokens in',  display: fmtTokens(tokIn)  })
-      items.push({ label: 'tokens out', display: fmtTokens(tokOut) })
-    }
-
-    // Request count + success rate
-    const reqCount = num(b?.totalCount)
+    const reqCount = num(summaryRaw?.totalCount)
     if (reqCount !== undefined)
       items.push({ label: 'requests', display: String(reqCount) })
 
-    const sr = num(b?.successRate)
-    if (sr !== undefined && sr < 100)
-      items.push({ label: 'success rate', display: `${sr}%` })
-
     return { id: 'commandcode', label: 'CommandCode', status: 'ok', items }
-  } catch (err) {
+  } catch (err: any) {
+    const auth = err?.status === 401 || err?.status === 403
     return {
       id: 'commandcode', label: 'CommandCode', status: 'error',
-      message: err instanceof Error ? err.message : String(err),
+      message: auth ? 'auth failed — check API key in DSH credentials'
+        : err instanceof Error ? err.message : String(err),
       items: [],
     }
   }
