@@ -12,7 +12,6 @@
  *   claude/codex/opencode-go. Probe line only appears after an explicit
  *   probe; "Not probed yet" placeholder removed.
  * - burn ledger remains but is supplementary below the items.
- * - Never render a fake % when `burn.percent` is null (budget 0).
  * - Hidden toggle unmounts BOTH the pill/ring AND the panel (render null).
  *
  * @module dsh-subscription-overlay/client/SubscriptionPanel
@@ -28,7 +27,7 @@ import {
   type OverlaySnapshot,
 } from './controller.ts';
 import { browserLang, translate } from './locale.ts';
-import type { BurnState, ProbeState, ProviderState, StatusItem } from './types.ts';
+import type { ProbeState, ProviderState, StatusItem } from './types.ts';
 
 /** Pointer travel below this many px still counts as a click, not a drag. */
 const DRAG_THRESHOLD_PX = 5;
@@ -478,8 +477,8 @@ function ProviderCard({ provider, state, t }: { provider: ProviderState; state: 
 }
 
 /**
- * commandcode card: probe state + burn ledger ONLY.
- * Never renders a percentage when `burn.percent` is null (budget 0).
+ * CommandCode card: quota items (5h window/weekly with reset timers,
+ * balance, plan, spend, tokens) plus optional probe diagnostics.
  */
 function CommandcodeCard({
   provider,
@@ -493,7 +492,6 @@ function CommandcodeCard({
   onProbe: () => void;
 }): React.JSX.Element {
   const probe: ProbeState | undefined = provider.probe;
-  const burn: BurnState | undefined = provider.burn;
   const probing = state.probing === 'commandcode';
   const probeLine =
     probe === undefined
@@ -504,7 +502,6 @@ function CommandcodeCard({
             { ms: probe.ms, n: probe.models?.length ?? 0 },
           )
         : t('probe.fail', { message: probe.message ?? '' });
-  const hasBudget = burn !== undefined && burn.budget > 0 && burn.percent !== null;
   return (
     <div className="dso-provider">
       <div className="dso-provider-head">
@@ -544,47 +541,6 @@ function CommandcodeCard({
             <span className="dso-provider-msg">{probe.models.join(' · ')}</span>
           )}
         </>
-      )}
-      {burn !== undefined && (
-        <div className="dso-burn">
-          <span className="dso-burn-title">{t('burn.title')}</span>
-          {hasBudget ? (
-            <>
-              <span className="dso-item-bar">
-                <span
-                  className={`dso-item-fill ${fillClass(burn.percent as number, state.alertPct)}`}
-                  style={{ width: `${String(Math.max(0, Math.min(100, burn.percent as number)))}%` }}
-                />
-              </span>
-              <span className="dso-item-value">
-                {t('burn.used', { used: compactTokens(burn.monthToDate), budget: compactTokens(burn.budget) })}
-              </span>
-              <span className="dso-item-reset">
-                {t('burn.remaining', { remaining: compactTokens(Math.max(0, burn.budget - burn.monthToDate)) })}
-                {burn.resetAt !== undefined && burn.resetAt !== '' ? ` · ${resetText(burn.resetAt, t)}` : ''}
-              </span>
-            </>
-          ) : (
-            // Track-only: token count + reset, NO percentage bar (acceptance).
-            <>
-              <span className="dso-item-value">{t('burn.usedNoBudget', { used: compactTokens(burn.monthToDate) })}</span>
-              {burn.resetAt !== undefined && burn.resetAt !== '' && (
-                <span className="dso-item-reset">{resetText(burn.resetAt, t)}</span>
-              )}
-              <span className="dso-burn-hint">
-                {'Real usage: '}
-                <a
-                  href="https://commandcode.ai/ajceee/settings/usage"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="dso-burn-link"
-                >
-                  commandcode.ai/settings/usage
-                </a>
-              </span>
-            </>
-          )}
-        </div>
       )}
     </div>
   );
