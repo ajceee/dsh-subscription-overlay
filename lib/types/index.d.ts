@@ -56,13 +56,20 @@ export interface ProviderRow {
         resetAt: string;
     };
 }
-/** commandcode probe: GET {baseURL}/models → online/offline only, never a percentage. */
-export declare function probeCommandcode(baseURL: string, apiKey: string): Promise<{
-    ok: boolean;
-    ms: number;
-    message?: string;
-    modelCount?: number;
-}>;
+/**
+ * Fetch CommandCode usage from the confirmed live endpoint:
+ *   GET https://api.commandcode.ai/alpha/usage/summary
+ * Response: { totalTokens, totalTokensIn, totalTokensOut, totalCount,
+ *             totalCredits, totalMonthlyCredits, totalPurchasedCredits,
+ *             totalFreeCredits, successRate, completedCount, failedCount,
+ *             averageCost, periodBasis }
+ *
+ * No quota cap or reset date is returned by this endpoint — Command Code does
+ * not expose a percentage-based window meter via API (only the Studio dashboard
+ * shows it).  We surface spend + token counts as display items, and optionally
+ * compute a spend-% against the user-configured monthly budget.
+ */
+export declare function fetchCommandcode(apiKey: string): Promise<ProviderRow>;
 export declare function appendBurn(burn: Record<string, Array<[number, number]>>, model: string, tokens: number, now?: number): Record<string, Array<[number, number]>>;
 export declare function monthToDate(burn: Record<string, Array<[number, number]>>, now?: Date): number;
 interface SettingsPatch {

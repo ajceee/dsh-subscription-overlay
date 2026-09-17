@@ -1,4 +1,4 @@
-/**
+﻿/**
  * dsh-subscription-overlay — host entry.
  *
  * Fresh-fetch quota aggregation for claude / codex / opencode-go (per
@@ -251,27 +251,77 @@ async function fetchOpencodeGo(token: string): Promise<ProviderRow> {
   }
 }
 
-/** commandcode probe: GET {baseURL}/models → online/offline only, never a percentage. */
-export async function probeCommandcode(baseURL: string, apiKey: string): Promise<{ ok: boolean; ms: number; message?: string; modelCount?: number }> {
-  const base = baseURL.replace(/\/+$/, '')
-  const t0 = Date.now()
+/**
+ * Fetch CommandCode usage from the confirmed live endpoint:
+ *   GET https://api.commandcode.ai/alpha/usage/summary
+ * Response: { totalTokens, totalTokensIn, totalTokensOut, totalCount,
+ *             totalCredits, totalMonthlyCredits, totalPurchasedCredits,
+ *             totalFreeCredits, successRate, completedCount, failedCount,
+ *             averageCost, periodBasis }
+ *
+ * No quota cap or reset date is returned by this endpoint — Command Code does
+ * not expose a percentage-based window meter via API (only the Studio dashboard
+ * shows it).  We surface spend + token counts as display items, and optionally
+ * compute a spend-% against the user-configured monthly budget.
+ */
+export async function fetchCommandcode(apiKey: string): Promise<ProviderRow> {
   try {
-    const resp = await fetch(`${base}/models`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(8_000),
+    const resp = await fetch('https://api.commandcode.ai/alpha/usage/summary', {
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(12_000),
     })
-    const ms = Date.now() - t0
-    if (!resp.ok) return { ok: false, ms, message: `Probe failed HTTP ${resp.status}` }
-    let count: number | undefined
-    try {
-      const b: any = await resp.json()
-      const arr = Array.isArray(b) ? b : b?.data
-      if (Array.isArray(arr)) count = arr.length
-    } catch { /* count stays undefined */ }
-    return { ok: true, ms, modelCount: count }
+    if (!resp.ok) {
+      const auth = resp.status === 401 || resp.status === 403
+      return {
+        id: 'commandcode', label: 'CommandCode', status: 'error',
+        message: auth ? 'auth failed — check API key in DSH credentials' : `HTTP ${resp.status}`,
+        items: [],
+      }
+    }
+    const b: any = await resp.json()
+    const items: QuotaItem[] = []
+
+    // Credits spent this billing period
+    const spent = num(b?.totalMonthlyCredits) ?? num(b?.totalCredits)
+    if (spent !== undefined)
+      items.push({ label: 'spent (period)', display: `${spent.toFixed(4)}` })
+
+    // Token counts
+    const tokTotal = num(b?.totalTokens)
+    if (tokTotal !== undefined)
+      items.push({ label: 'tokens (period)', display: fmtTokens(tokTotal) })
+
+    const tokIn = num(b?.totalTokensIn)
+    const tokOut = num(b?.totalTokensOut)
+    if (tokIn !== undefined && tokOut !== undefined) {
+      items.push({ label: 'tokens in',  display: fmtTokens(tokIn)  })
+      items.push({ label: 'tokens out', display: fmtTokens(tokOut) })
+    }
+
+    // Request count + success rate
+    const reqCount = num(b?.totalCount)
+    if (reqCount !== undefined)
+      items.push({ label: 'requests', display: String(reqCount) })
+
+    const sr = num(b?.successRate)
+    if (sr !== undefined && sr < 100)
+      items.push({ label: 'success rate', display: `${sr}%` })
+
+    return { id: 'commandcode', label: 'CommandCode', status: 'ok', items }
   } catch (err) {
-    return { ok: false, ms: Date.now() - t0, message: `Probe failed: ${err instanceof Error ? err.message : String(err)}` }
+    return {
+      id: 'commandcode', label: 'CommandCode', status: 'error',
+      message: err instanceof Error ? err.message : String(err),
+      items: [],
+    }
   }
+}
+
+/** Format a raw token count as e.g. "272.7M" or "1.08M" or "45.3K". */
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}K`
+  return String(n)
 }
 
 /* ── burn ledger (per-model [epochMs, tokens], 30d prune, 1000/model cap) ── */
@@ -322,7 +372,7 @@ class OverlayController {
           off('claude', 'Claude'),
           off('codex', 'Codex'),
           off('opencode-go', 'OpenCode Go'),
-          off('commandcode', 'command-code'),
+          off('commandcode', 'CommandCode'),
         ],
       }
     }
@@ -341,31 +391,23 @@ class OverlayController {
       providers.push(t ? await fetchOpencodeGo(t) : { id: 'opencode-go', label: 'OpenCode Go', status: 'error', message: 'no token — login via Subscriptions settings', items: [] })
     } else providers.push(off('opencode-go', 'OpenCode Go'))
     if (cfg.providers.commandcode) providers.push(await this.commandcodeRow(cfg, creds))
-    else providers.push(off('commandcode', 'command-code'))
+    else providers.push(off('commandcode', 'CommandCode'))
     return { refreshedAt: now, providers }
   }
 
   private async commandcodeRow(cfg: Config, creds: any): Promise<ProviderRow> {
     const llm = this.llmProvider('command-code')
     const keyEnv = llm?.apiKeyEnv || 'COMMAND_CODE_API_KEY'
-    const base = llm?.baseURL || 'https://api.commandcode.ai/provider/v1'
     const key = await resolveSecret(creds, [keyEnv, 'COMMAND_CODE_API_KEY'], [keyEnv, 'COMMAND_CODE_API_KEY'])
     const mtd = monthToDate(cfg.burn ?? {})
     const budget = cfg.commandcodeMonthlyBudget ?? 0
     const next = new Date(); next.setMonth(next.getMonth() + 1, 1); next.setHours(0, 0, 0, 0)
     const burn = { monthToDate: mtd, budget, percent: budget > 0 ? (mtd / budget) * 100 : null as number | null, resetAt: next.toISOString() }
     if (!key) {
-      return { id: 'commandcode', label: 'command-code', status: 'error', message: 'no API key — add via DSH credentials', items: [], burn }
+      return { id: 'commandcode', label: 'CommandCode', status: 'error', message: 'no API key — add via DSH credentials', items: [], burn }
     }
-    const probe = await probeCommandcode(base, key.value)
-    return {
-      id: 'commandcode', label: 'command-code',
-      status: probe.ok ? 'ok' : 'error',
-      ...(probe.ok ? {} : { message: probe.message }),
-      items: [],
-      probe: { ok: probe.ok, ms: probe.ms, ...(probe.modelCount !== undefined ? { models: probe.modelCount } : {}), ...(probe.message ? { message: probe.message } : {}) },
-      burn,
-    }
+    const row = await fetchCommandcode(key.value)
+    return { ...row, burn }
   }
 
   status() {
