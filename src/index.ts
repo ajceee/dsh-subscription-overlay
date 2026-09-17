@@ -195,10 +195,24 @@ async function fetchCodex(token: string): Promise<ProviderRow> {
     }
     const b: any = await resp.json()
     const items: QuotaItem[] = []
-    const p = num(b?.primary_pct)
-    if (p !== undefined) items.push({ label: 'primary', percent: p, resetAt: b?.primary_reset_at ?? b?.primary_reset })
-    const s = num(b?.secondary_pct)
-    if (s !== undefined) items.push({ label: 'secondary', percent: s, resetAt: b?.secondary_reset_at ?? b?.secondary_reset })
+
+    // wham/usage raw shape: { rate_limit: { primary_window: { used_percent, limit_window_seconds, reset_at }, secondary_window: {...} } }
+    // The Python helper script normalises this to { primary_pct, primary_reset_at, secondary_pct, secondary_reset_at }
+    // but we hit the raw API, so we handle both shapes.
+    const rl = b?.rate_limit ?? b
+    const windowPct = (w: any): number | undefined => num(w?.used_percent) ?? num(w?.usedPercent)
+    const windowReset = (w: any): string | undefined =>
+      typeof w?.reset_at === 'string' ? w.reset_at : typeof w?.resetsAt === 'string' ? w.resetsAt : undefined
+
+    const pri = rl?.primary_window ?? null
+    const sec = rl?.secondary_window ?? null
+    const priPct = pri !== null ? windowPct(pri) : (num(b?.primary_pct))
+    const secPct = sec !== null ? windowPct(sec) : (num(b?.secondary_pct))
+    const priReset = pri !== null ? windowReset(pri) : (b?.primary_reset_at ?? b?.primary_reset)
+    const secReset = sec !== null ? windowReset(sec) : (b?.secondary_reset_at ?? b?.secondary_reset)
+
+    if (priPct !== undefined) items.push({ label: 'primary', percent: priPct, resetAt: priReset })
+    if (secPct !== undefined) items.push({ label: 'secondary', percent: secPct, resetAt: secReset })
     return { id: 'codex', label: 'Codex', status: 'ok', items }
   } catch (err) {
     return { id: 'codex', label: 'Codex', status: 'error', message: err instanceof Error ? err.message : String(err), items: [] }
@@ -217,13 +231,20 @@ async function fetchOpencodeGo(token: string): Promise<ProviderRow> {
     }
     const b: any = await resp.json()
     const items: QuotaItem[] = []
-    const push = (label: string, w: any) => {
-      const pct = num(w?.utilization)
-      if (pct !== undefined) items.push({ label, percent: pct, resetAt: typeof w?.resets_at === 'string' ? w.resets_at : undefined })
+    // opencode.ai/zen/go/v1/usage raw shape:
+    //   { usage: { rolling: {percent, resetsAt, status}, weekly: {...}, monthly: {...} } }
+    // WezTerm normalises rolling→five_hour, weekly→seven_day with .utilization/.resets_at.
+    // We read both the raw and normalised shapes for forward/backward compatibility.
+    const usage = b?.usage ?? b
+    const pushWindow = (label: string, raw: any, normalised: any) => {
+      const pct = num(raw?.percent) ?? num(normalised?.utilization)
+      const resetAt = (typeof raw?.resetsAt === 'string' ? raw.resetsAt : undefined)
+        ?? (typeof normalised?.resets_at === 'string' ? normalised.resets_at : undefined)
+      if (pct !== undefined) items.push({ label, percent: pct, resetAt })
     }
-    push('5h window', b?.five_hour)
-    push('7d window', b?.seven_day)
-    push('monthly', b?.monthly)
+    pushWindow('rolling (5h)', usage?.rolling, b?.five_hour)
+    pushWindow('weekly', usage?.weekly, b?.seven_day)
+    pushWindow('monthly', usage?.monthly, b?.monthly)
     return { id: 'opencode-go', label: 'OpenCode Go', status: 'ok', items }
   } catch (err) {
     return { id: 'opencode-go', label: 'OpenCode Go', status: 'error', message: err instanceof Error ? err.message : String(err), items: [] }
@@ -518,13 +539,20 @@ async function route(req: any, res: any, ctrl: OverlayController) {
 export function apply(ctx: Context, config: Config): void {
   let scope: any
   let settingsSvc: any
+  // Hard-coded fallback provider definitions — used when settingsSvc hasn't injected yet
+  // (first cold refresh). These match the well-known entries in ~/.dsh/settings.yaml.
+  const FALLBACK_PROVIDERS: Array<{ id: string; apiKeyEnv: string; baseURL?: string }> = [
+    { id: 'opencode-go', apiKeyEnv: 'OPENCODE_GO_API_KEY' },
+    { id: 'command-code', apiKeyEnv: 'COMMAND_CODE_API_KEY', baseURL: 'https://api.commandcode.ai/provider/v1' },
+  ]
+
   const ctrl = new OverlayController(
     ctx,
     () => scope,
     () => (ctx as any).get('credentials'),
     () => {
       const providers = settingsSvc?.describe?.()?.find((x: any) => x.ns === 'llm-pi-ai')?.value?.providers
-      if (!providers || typeof providers !== 'object') return []
+      if (!providers || typeof providers !== 'object') return FALLBACK_PROVIDERS
       const out: Array<{ id: string; apiKeyEnv?: string; baseURL?: string }> = []
       for (const [id, p] of Object.entries<any>(providers)) {
         out.push({
