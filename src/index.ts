@@ -60,6 +60,29 @@ export interface ProviderRow {
   burn?: { monthToDate: number; budget: number; percent: number | null; resetAt: string }
 }
 
+/** Cached parsed credentials yaml (keyed by path, loaded once per process). */
+const _credCache: Record<string, Record<string, string> | null> = {}
+
+/** Read key→value pairs from ~/.dsh/.credentials.yaml without a YAML parser.
+ *  Only handles the simple `KEY: value` lines the DSH credentials domain writes. */
+async function readDshCredentials(): Promise<Record<string, string>> {
+  const path = join(homedir(), '.dsh', '.credentials.yaml')
+  if (path in _credCache) return _credCache[path] ?? {}
+  try {
+    const raw = await readFile(path, 'utf8')
+    const out: Record<string, string> = {}
+    for (const line of raw.split('\n')) {
+      const m = line.match(/^[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*:[ \t]*(.+)$/)
+      if (m) out[m[1].trim()] = m[2].trim().replace(/^["']|["']$/g, '')
+    }
+    _credCache[path] = out
+    return out
+  } catch {
+    _credCache[path] = null
+    return {}
+  }
+}
+
 async function resolveSecret(credentials: any, refs: string[], envKeys: string[]) {
   if (credentials) for (const ref of refs) {
     if (!ref) continue
@@ -71,6 +94,13 @@ async function resolveSecret(credentials: any, refs: string[], envKeys: string[]
   for (const k of envKeys) {
     const v = process.env[k]?.trim()
     if (v) return { value: v, ref: k, source: 'env' }
+  }
+  // Final fallback: read directly from ~/.dsh/.credentials.yaml when the
+  // credentials service has not yet injected (e.g. on first cold refresh).
+  const yaml = await readDshCredentials()
+  for (const k of envKeys) {
+    const v = yaml[k]?.trim()
+    if (v) return { value: v, ref: k, source: 'yaml' }
   }
   return undefined
 }
@@ -210,7 +240,7 @@ export async function probeCommandcode(baseURL: string, apiKey: string): Promise
       signal: AbortSignal.timeout(8_000),
     })
     const ms = Date.now() - t0
-    if (!resp.ok) return { ok: false, ms, message: `探测失败 HTTP ${resp.status}` }
+    if (!resp.ok) return { ok: false, ms, message: `Probe failed HTTP ${resp.status}` }
     let count: number | undefined
     try {
       const b: any = await resp.json()
@@ -219,7 +249,7 @@ export async function probeCommandcode(baseURL: string, apiKey: string): Promise
     } catch { /* count stays undefined */ }
     return { ok: true, ms, modelCount: count }
   } catch (err) {
-    return { ok: false, ms: Date.now() - t0, message: `探测失败：${err instanceof Error ? err.message : String(err)}` }
+    return { ok: false, ms: Date.now() - t0, message: `Probe failed: ${err instanceof Error ? err.message : String(err)}` }
   }
 }
 

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Toggleable shell.overlay pill/ring + 4-provider panel.
  *
  * Adapted from dsh-quota's QuotaPanel (SPIKE §1, `.dso-` scope): draggable
@@ -23,7 +23,7 @@ import {
   summarizeProvider,
   type OverlaySnapshot,
 } from './controller.ts';
-import { browserLang, translate, type Lang } from './locale.ts';
+import { browserLang, translate } from './locale.ts';
 import type { BurnState, ProbeState, ProviderState, StatusItem } from './types.ts';
 
 /** Pointer travel below this many px still counts as a click, not a drag. */
@@ -149,7 +149,7 @@ export type SubscriptionPanelProps = SubscriptionPanelFace;
 /** The pill + panel entry. */
 export function SubscriptionPanel(props: SubscriptionPanelProps): React.JSX.Element | null {
   const state = props.useSubscriptionOverlay((snapshot) => snapshot);
-  const lang: Lang = browserLang();
+  const lang = browserLang();
   const t = (key: Parameters<typeof translate>[1], params?: Record<string, string | number>): string =>
     translate(lang, key, params);
   const busy = state.busy;
@@ -433,7 +433,7 @@ export function SubscriptionPanel(props: SubscriptionPanelProps): React.JSX.Elem
           <div className="dso-foot">
             {state.refreshedAt > 0
               ? t('panel.footer.refreshedAt', {
-                  time: new Date(state.refreshedAt).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en-US'),
+                  time: new Date(state.refreshedAt).toLocaleString('en-US'),
                 })
               : t('panel.footer.never')}
           </div>
@@ -553,6 +553,17 @@ function CommandcodeCard({
               {burn.resetAt !== undefined && burn.resetAt !== '' && (
                 <span className="dso-item-reset">{resetText(burn.resetAt, t)}</span>
               )}
+              <span className="dso-burn-hint">
+                {'Real usage: '}
+                <a
+                  href="https://commandcode.ai/ajceee/settings/usage"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="dso-burn-link"
+                >
+                  commandcode.ai/settings/usage
+                </a>
+              </span>
             </>
           )}
         </div>

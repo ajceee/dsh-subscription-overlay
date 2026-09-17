@@ -91,7 +91,7 @@ export function headlineItem(p: ProviderState): StatusItem | undefined {
   return withPct.find((i) => /5\s*h/i.test(i.label)) ?? withPct[0];
 }
 
-/** One-line summary of a provider's headline windows ("5h 剩80% · 7d 剩64%"). */
+/** One-line summary of a provider's headline windows ("5h 20% left · 7d 36% left"). */
 export function summarizeProvider(p: ProviderState): string {
   if (!p || p.status !== 'ok' || !Array.isArray(p.items)) return '';
   const head = (item: StatusItem): string | undefined => {
@@ -101,13 +101,13 @@ export function summarizeProvider(p: ProviderState): string {
       : /7\s*d/i.test(item.label)
         ? '7d'
         : /month/i.test(item.label)
-          ? '月'
+          ? 'mo'
           : /primary/i.test(item.label)
-            ? '主'
+            ? 'pri'
             : /secondary/i.test(item.label)
-              ? '次'
+              ? 'sec'
               : '';
-    const value = `剩${Math.max(0, Math.round(100 - item.percent))}%`;
+    const value = `${Math.max(0, Math.round(100 - item.percent))}% left`;
     return tag !== '' ? `${tag} ${value}` : value;
   };
   const headlines = p.items.filter((i) => typeof i.percent === 'number');
@@ -275,7 +275,7 @@ async function request(path: string, body: unknown): Promise<Record<string, unkn
         }
       : {}),
   });
-  if (!response.ok) throw new Error(`插件请求失败（HTTP ${response.status}）`);
+  if (!response.ok) throw new Error(`Plugin request failed (HTTP ${response.status})`);
   const data = (await response.json()) as Record<string, unknown>;
   if (body !== undefined && typeof data['statusMessage'] === 'string') {
     throw new Error(data['statusMessage']);

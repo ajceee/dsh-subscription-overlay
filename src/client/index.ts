@@ -134,7 +134,7 @@ export function apply(ctx: ClientContext): void {
           name: 'settings.section',
           id: PLUGIN_ID,
           order: 56,
-          label: () => '订阅额度浮层',
+          label: () => 'Subscription Overlay',
           inject: () => ({
             // The section reads/writes through the same-origin host API
             // (t2 owns validation + persistence); no host service needed.

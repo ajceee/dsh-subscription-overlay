@@ -1,4 +1,4 @@
-/**
+﻿/**
  * `settings.section` page for the overlay (order ~56, next to Task Router).
  *
  * Controls (SPIKE §4): master overlay toggle, four provider toggles, poll
@@ -13,39 +13,9 @@
  */
 import { useEffect, useState } from 'react';
 import { API_PREFIX } from './controller.ts';
-import { browserLang, translate } from './locale.ts';
 import type { SettingsPatch, StatusResponse } from './types.ts';
 
-type SectionLang = ReturnType<typeof browserLang>;
-
-const zhExtra = {
-  'settings.title': '订阅额度浮层',
-  'settings.desc': '控制桌面浮层与四家供应商额度面板。API Key 不在此存放——凭证走 DSH 凭证域。',
-  'settings.enabled': '显示浮层',
-  'settings.enabledHint': '关闭后药丸/悬浮环与面板同时卸载，且停止轮询。',
-  'settings.providers': '供应商',
-  'settings.provider.claude': 'Claude（5h / 7d）',
-  'settings.provider.codex': 'Codex（主 / 次）',
-  'settings.provider.opencodeGo': 'opencode-go（5h / 7d / 月）',
-  'settings.provider.commandcode': 'commandcode（探测 + 本月消耗）',
-  'settings.pollMinutes': '轮询间隔（分钟）',
-  'settings.pollHint': '1–60 分钟。',
-  'settings.alertPct': '告警阈值（%）',
-  'settings.alertHint': '用量达到该百分比时进度条变红、药丸显示红点。',
-  'settings.budget': 'commandcode 月预算（tokens）',
-  'settings.budgetHint': '0 = 仅记录消耗，不显示百分比。',
-  'settings.hotkey': '快捷键',
-  'settings.save': '保存',
-  'settings.saving': '保存中…',
-  'settings.saved': '已保存',
-  'settings.loadError': '读取配置失败：{message}',
-  'settings.saveError': '保存失败：{message}',
-  'settings.invalidPoll': '轮询间隔须为 1–60 的整数。',
-  'settings.invalidAlert': '告警阈值须为 1–100 的整数。',
-  'settings.invalidBudget': '月预算须为 ≥ 0 的整数。',
-};
-
-const enExtra: Record<keyof typeof zhExtra, string> = {
+const S = {
   'settings.title': 'Subscription Overlay',
   'settings.desc': 'Controls the desktop floater and the 4-provider quota panel. No API keys live here — credentials stay in the DSH credentials domain.',
   'settings.enabled': 'Show overlay',
@@ -69,15 +39,13 @@ const enExtra: Record<keyof typeof zhExtra, string> = {
   'settings.saveError': 'Failed to save: {message}',
   'settings.invalidPoll': 'Poll interval must be an integer 1–60.',
   'settings.invalidAlert': 'Alert threshold must be an integer 1–100.',
-  'settings.invalidBudget': 'Monthly budget must be an integer ≥ 0.',
-};
+  'settings.invalidBudget': 'Monthly budget must be an integer >= 0.',
+} as const;
 
-type ExtraKey = keyof typeof zhExtra;
+type ExtraKey = keyof typeof S;
 
-function tx(lang: SectionLang, key: ExtraKey | 'loadError' | 'saveError' | 'invalidPoll' | 'invalidAlert' | 'invalidBudget', params?: Record<string, string | number>): string {
-  const full = (key.startsWith('settings.') ? key : `settings.${key}`) as ExtraKey;
-  const dict = lang === 'en' ? enExtra : zhExtra;
-  let text: string = dict[full] ?? zhExtra[full] ?? full;
+function tx(key: ExtraKey, params?: Record<string, string | number>): string {
+  let text: string = S[key];
   if (params) {
     for (const [k, v] of Object.entries(params)) text = text.replaceAll(`{${k}}`, String(v));
   }
@@ -160,7 +128,7 @@ async function api(path: string, body?: unknown): Promise<Record<string, unknown
       : {}),
   });
   if (!response.ok) {
-    throw new Error(translate(browserLang(), 'error.requestFailed', { status: response.status }));
+    throw new Error('Plugin request failed');
   }
   const data = (await response.json()) as Record<string, unknown>;
   if (body !== undefined && typeof data['statusMessage'] === 'string') {
@@ -171,7 +139,7 @@ async function api(path: string, body?: unknown): Promise<Record<string, unknown
 
 /** Settings section body (the shell provides nav + header around it). */
 export function OverlaySettingsSection(): React.JSX.Element {
-  const lang = browserLang();
+
   const [form, setForm] = useState<SectionForm>(DEFAULT_FORM);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -185,7 +153,7 @@ export function OverlaySettingsSection(): React.JSX.Element {
         if (live) setForm(formFromStatus(status as StatusResponse));
       })
       .catch((err: unknown) => {
-        if (live) setError(tx(lang, 'loadError', { message: err instanceof Error ? err.message : String(err) }));
+        if (live) setError(tx('loadError', { message: err instanceof Error ? err.message : String(err) }));
       })
       .finally(() => {
         if (live) setLoading(false);
@@ -206,15 +174,15 @@ export function OverlaySettingsSection(): React.JSX.Element {
     const alert = Number(form.alertPct);
     const budget = Number(form.budget);
     if (!Number.isInteger(poll) || poll < 1 || poll > 60) {
-      setError(tx(lang, 'invalidPoll'));
+      setError(tx('invalidPoll'));
       return;
     }
     if (!Number.isInteger(alert) || alert < 1 || alert > 100) {
-      setError(tx(lang, 'invalidAlert'));
+      setError(tx('invalidAlert'));
       return;
     }
     if (!Number.isInteger(budget) || budget < 0) {
-      setError(tx(lang, 'invalidBudget'));
+      setError(tx('invalidBudget'));
       return;
     }
     const patch: SettingsPatch = {
@@ -241,7 +209,7 @@ export function OverlaySettingsSection(): React.JSX.Element {
         setSaved(true);
       })
       .catch((err: unknown) => {
-        setError(tx(lang, 'saveError', { message: err instanceof Error ? err.message : String(err) }));
+        setError(tx('saveError', { message: err instanceof Error ? err.message : String(err) }));
       })
       .finally(() => {
         setSaving(false);
@@ -251,40 +219,40 @@ export function OverlaySettingsSection(): React.JSX.Element {
   if (loading) {
     return (
       <div className="dso-section">
-        <span className="dso-section-hint">{translate(lang, 'panel.refreshing')}</span>
+        <span className="dso-section-hint">{'Refreshing\u2026'}</span>
       </div>
     );
   }
 
   return (
     <div className="dso-section">
-      <span className="dso-section-hint">{tx(lang, 'settings.desc')}</span>
+      <span className="dso-section-hint">{tx('settings.desc')}</span>
       <div className="dso-section-row">
-        <label htmlFor="dso-settings-enabled">{tx(lang, 'settings.enabled')}</label>
+        <label htmlFor="dso-settings-enabled">{tx('settings.enabled')}</label>
         <Switch id="dso-settings-enabled" on={form.enabled} onFlip={() => set('enabled', !form.enabled)} />
       </div>
-      <span className="dso-section-hint">{tx(lang, 'settings.enabledHint')}</span>
+      <span className="dso-section-hint">{tx('settings.enabledHint')}</span>
       <div className="dso-section-row">
-        <span style={{ flex: 1 }}>{tx(lang, 'settings.providers')}</span>
+        <span style={{ flex: 1 }}>{tx('settings.providers')}</span>
       </div>
       <div className="dso-section-row">
-        <label htmlFor="dso-settings-claude">{tx(lang, 'settings.provider.claude')}</label>
+        <label htmlFor="dso-settings-claude">{tx('settings.provider.claude')}</label>
         <Switch id="dso-settings-claude" on={form.claude} onFlip={() => set('claude', !form.claude)} />
       </div>
       <div className="dso-section-row">
-        <label htmlFor="dso-settings-codex">{tx(lang, 'settings.provider.codex')}</label>
+        <label htmlFor="dso-settings-codex">{tx('settings.provider.codex')}</label>
         <Switch id="dso-settings-codex" on={form.codex} onFlip={() => set('codex', !form.codex)} />
       </div>
       <div className="dso-section-row">
-        <label htmlFor="dso-settings-opencode">{tx(lang, 'settings.provider.opencodeGo')}</label>
+        <label htmlFor="dso-settings-opencode">{tx('settings.provider.opencodeGo')}</label>
         <Switch id="dso-settings-opencode" on={form.opencodeGo} onFlip={() => set('opencodeGo', !form.opencodeGo)} />
       </div>
       <div className="dso-section-row">
-        <label htmlFor="dso-settings-commandcode">{tx(lang, 'settings.provider.commandcode')}</label>
+        <label htmlFor="dso-settings-commandcode">{tx('settings.provider.commandcode')}</label>
         <Switch id="dso-settings-commandcode" on={form.commandcode} onFlip={() => set('commandcode', !form.commandcode)} />
       </div>
       <div className="dso-section-row">
-        <label htmlFor="dso-settings-poll">{tx(lang, 'settings.pollMinutes')}</label>
+        <label htmlFor="dso-settings-poll">{tx('settings.pollMinutes')}</label>
         <input
           id="dso-settings-poll"
           className="dso-input"
@@ -293,9 +261,9 @@ export function OverlaySettingsSection(): React.JSX.Element {
           onChange={(e) => set('pollMinutes', e.currentTarget.value)}
         />
       </div>
-      <span className="dso-section-hint">{tx(lang, 'settings.pollHint')}</span>
+      <span className="dso-section-hint">{tx('settings.pollHint')}</span>
       <div className="dso-section-row">
-        <label htmlFor="dso-settings-alert">{tx(lang, 'settings.alertPct')}</label>
+        <label htmlFor="dso-settings-alert">{tx('settings.alertPct')}</label>
         <input
           id="dso-settings-alert"
           className="dso-input"
@@ -304,9 +272,9 @@ export function OverlaySettingsSection(): React.JSX.Element {
           onChange={(e) => set('alertPct', e.currentTarget.value)}
         />
       </div>
-      <span className="dso-section-hint">{tx(lang, 'settings.alertHint')}</span>
+      <span className="dso-section-hint">{tx('settings.alertHint')}</span>
       <div className="dso-section-row">
-        <label htmlFor="dso-settings-budget">{tx(lang, 'settings.budget')}</label>
+        <label htmlFor="dso-settings-budget">{tx('settings.budget')}</label>
         <input
           id="dso-settings-budget"
           className="dso-input"
@@ -315,16 +283,16 @@ export function OverlaySettingsSection(): React.JSX.Element {
           onChange={(e) => set('budget', e.currentTarget.value)}
         />
       </div>
-      <span className="dso-section-hint">{tx(lang, 'settings.budgetHint')}</span>
+      <span className="dso-section-hint">{tx('settings.budgetHint')}</span>
       <div className="dso-section-row">
-        <span style={{ flex: 1 }}>{tx(lang, 'settings.hotkey')}</span>
+        <span style={{ flex: 1 }}>{tx('settings.hotkey')}</span>
         <code>{form.hotkey}</code>
       </div>
       {error !== '' && <span className="dso-section-error">{error}</span>}
-      {saved && error === '' && <span className="dso-section-ok">{tx(lang, 'settings.saved')}</span>}
+      {saved && error === '' && <span className="dso-section-ok">{tx('settings.saved')}</span>}
       <div className="dso-section-row">
         <button type="button" className="dso-btn dso-btn--primary" disabled={saving} onClick={save}>
-          {saving ? tx(lang, 'settings.saving') : tx(lang, 'settings.save')}
+          {saving ? tx('settings.saving') : tx('settings.save')}
         </button>
       </div>
     </div>

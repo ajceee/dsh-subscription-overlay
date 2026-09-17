@@ -1,4 +1,4 @@
-/**
+﻿/**
  * t3 client unit tests: pure controller helpers + acceptance-critical rules.
  *
  * - commandcode burn.percent null (budget 0) is never coerced to a number
@@ -92,7 +92,7 @@ describe('alert + headline helpers', () => {
   });
 
   it('summarizes headline windows, empty for non-ok providers', () => {
-    assert.equal(summarizeProvider(claude), '5h 剩80% · 7d 剩10%');
+    assert.equal(summarizeProvider(claude), '5h 80% left · 7d 10% left');
     assert.equal(summarizeProvider({ ...claude, status: 'error' }), '');
     assert.equal(summarizeProvider(commandcode), '');
   });
