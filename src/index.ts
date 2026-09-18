@@ -171,11 +171,14 @@ async function fetchClaude(token: string): Promise<ProviderRow> {
       const pct = num(w?.utilization)
       if (pct !== undefined) items.push({ label, percent: pct, resetAt: typeof w?.resets_at === 'string' ? w.resets_at : undefined })
     }
-    push('5h window', b?.five_hour)
-    push('7d window', b?.seven_day)
+    push('5h', b?.five_hour)
+    push('7d', b?.seven_day)
     for (const lim of Array.isArray(b?.limits) ? b.limits : []) {
+      const kind = String(lim?.kind ?? '')
+      // session = current-session meter (not needed); weekly_all duplicates 7d
+      if (kind === 'session' || kind === 'weekly_all') continue
       const pct = num(lim?.percent)
-      if (pct !== undefined) items.push({ label: String(lim?.kind ?? 'limit'), percent: pct, resetAt: typeof lim?.resets_at === 'string' ? lim.resets_at : undefined })
+      if (pct !== undefined) items.push({ label: kind === 'weekly_scoped' ? 'Fable' : kind, percent: pct, resetAt: typeof lim?.resets_at === 'string' ? lim.resets_at : undefined })
     }
     return { id: 'claude', label: 'Claude', status: 'ok', items }
   } catch (err) {
@@ -216,8 +219,8 @@ async function fetchCodex(token: string): Promise<ProviderRow> {
     const priReset = pri !== null ? windowReset(pri) : undefined
     const secReset = sec !== null ? windowReset(sec) : undefined
     // primary_window = 5-hour rolling; secondary_window = weekly (per Codex plan docs)
-    if (priPct !== undefined) items.push({ label: '5h window', percent: priPct, resetAt: priReset })
-    if (secPct !== undefined) items.push({ label: 'weekly',    percent: secPct, resetAt: secReset })
+    if (priPct !== undefined) items.push({ label: '5h', percent: priPct, resetAt: priReset })
+    if (secPct !== undefined) items.push({ label: '7d', percent: secPct, resetAt: secReset })
     return { id: 'codex', label: 'Codex', status: 'ok', items }
   } catch (err) {
     return { id: 'codex', label: 'Codex', status: 'error', message: err instanceof Error ? err.message : String(err), items: [] }
@@ -247,9 +250,9 @@ async function fetchOpencodeGo(token: string): Promise<ProviderRow> {
         ?? (typeof normalised?.resets_at === 'string' ? normalised.resets_at : undefined)
       if (pct !== undefined) items.push({ label, percent: pct, resetAt })
     }
-    pushWindow('5h window', usage?.rolling, b?.five_hour)
-    pushWindow('weekly',    usage?.weekly,   b?.seven_day)
-    pushWindow('monthly',   usage?.monthly,  b?.monthly)
+    pushWindow('5h',  usage?.rolling, b?.five_hour)
+    pushWindow('7d',  usage?.weekly,   b?.seven_day)
+    pushWindow('30d', usage?.monthly,  b?.monthly)
     return { id: 'opencode-go', label: 'OpenCode Go', status: 'ok', items }
   } catch (err) {
     return { id: 'opencode-go', label: 'OpenCode Go', status: 'error', message: err instanceof Error ? err.message : String(err), items: [] }
@@ -296,15 +299,6 @@ export async function fetchCommandcode(apiKey: string): Promise<ProviderRow> {
     const credits = creditsRaw.status === 'fulfilled' ? creditsRaw.value : null
     const subs    = subsRaw.status === 'fulfilled'    ? subsRaw.value    : null
 
-    // Period start for scoped summary
-    const periodStart: string | undefined = subs?.data?.currentPeriodStart ?? undefined
-    const summaryQ = [orgId ? `orgId=${orgId}` : '', periodStart ? `since=${periodStart}` : '']
-      .filter(Boolean).join('&')
-    const summaryPath = `/alpha/usage/summary${summaryQ ? `?${summaryQ}` : ''}`
-
-    // 4. usage/summary
-    const summaryRaw = await get(summaryPath).catch(() => null)
-
     const items: QuotaItem[] = []
 
     // Rolling window meters from billing/credits — same pattern as Claude 5h/7d
@@ -318,31 +312,12 @@ export async function fetchCommandcode(apiKey: string): Promise<ProviderRow> {
         : typeof w.resetAt === 'string' ? w.resetAt : undefined
       items.push({ label, percent: pct, resetAt })
     }
-    pushWindow('5h window', wl?.fiveHour)
-    pushWindow('weekly',    wl?.weekly)
-
-    // Credit balance (remaining)
-    const monthly    = num(credits?.credits?.monthlyCredits)
-    const purchased  = num(credits?.credits?.purchasedCredits)
-    const free       = num(credits?.credits?.freeCredits)
-    const remaining  = (monthly ?? 0) + (purchased ?? 0) + (free ?? 0)
-    if (monthly !== undefined)
-      items.push({ label: 'balance', display: `${remaining.toFixed(2)} remaining` })
+    pushWindow('5h', wl?.fiveHour)
+    pushWindow('7d', wl?.weekly)
 
     // Plan
     const planId: string | undefined = subs?.data?.planId
     if (planId) items.push({ label: 'plan', display: planId })
-
-    // Period spend + tokens from usage/summary
-    const spent = num(summaryRaw?.totalMonthlyCredits) ?? num(summaryRaw?.totalCost)
-    if (spent !== undefined)
-      items.push({ label: 'spent (period)', display: `${spent.toFixed(4)}` })
-    const tokTotal = num(summaryRaw?.totalTokens)
-    if (tokTotal !== undefined)
-      items.push({ label: 'tokens (period)', display: fmtTokens(tokTotal) })
-    const reqCount = num(summaryRaw?.totalCount)
-    if (reqCount !== undefined)
-      items.push({ label: 'requests', display: String(reqCount) })
 
     return { id: 'commandcode', label: 'CommandCode', status: 'ok', items }
   } catch (err: any) {
@@ -354,13 +329,6 @@ export async function fetchCommandcode(apiKey: string): Promise<ProviderRow> {
       items: [],
     }
   }
-}
-
-/** Format a raw token count as e.g. "272.7M" or "1.08M" or "45.3K". */
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}K`
-  return String(n)
 }
 
 /* ── burn ledger (per-model [epochMs, tokens], 30d prune, 1000/model cap) ── */

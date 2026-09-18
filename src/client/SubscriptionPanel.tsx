@@ -27,7 +27,7 @@ import {
   type OverlaySnapshot,
 } from './controller.ts';
 import { browserLang, translate } from './locale.ts';
-import type { ProbeState, ProviderState, StatusItem } from './types.ts';
+import type { ProviderState, StatusItem } from './types.ts';
 
 /** Pointer travel below this many px still counts as a click, not a drag. */
 const DRAG_THRESHOLD_PX = 5;
@@ -422,7 +422,7 @@ export function SubscriptionPanel(props: SubscriptionPanelProps): React.JSX.Elem
             )}
             {state.providers.map((p) =>
               p.id === 'commandcode' ? (
-                <CommandcodeCard key={p.id} provider={p} state={state} t={t} onProbe={props.probe} />
+                <CommandcodeCard key={p.id} provider={p} state={state} t={t} />
               ) : (
                 <ProviderCard key={p.id} provider={p} state={state} t={t} />
               ),
@@ -483,25 +483,12 @@ function ProviderCard({ provider, state, t }: { provider: ProviderState; state: 
 function CommandcodeCard({
   provider,
   t,
-  onProbe,
   state,
 }: {
   provider: ProviderState;
   state: OverlaySnapshot;
   t: T;
-  onProbe: () => void;
 }): React.JSX.Element {
-  const probe: ProbeState | undefined = provider.probe;
-  const probing = state.probing === 'commandcode';
-  const probeLine =
-    probe === undefined
-      ? ''
-      : probe.ok
-        ? t(
-            probe.models !== undefined && probe.models.length > 0 ? 'probe.ok' : 'probe.okNoModels',
-            { ms: probe.ms, n: probe.models?.length ?? 0 },
-          )
-        : t('probe.fail', { message: probe.message ?? '' });
   return (
     <div className="dso-provider">
       <div className="dso-provider-head">
@@ -509,15 +496,6 @@ function CommandcodeCard({
         <span className={`dso-badge ${badgeClass(provider.status)}`}>
           {t(`status.${provider.status}`)}
         </span>
-        <button
-          type="button"
-          className="dso-btn dso-btn--ghost dso-probe"
-          disabled={probing}
-          title={t('probe.title')}
-          onClick={onProbe}
-        >
-          {probing ? '…' : t('probe.run')}
-        </button>
       </div>
       {provider.message != null && provider.message !== '' && (
         <span className="dso-provider-msg">{provider.message}</span>
@@ -529,18 +507,8 @@ function CommandcodeCard({
           ))}
         </div>
       )}
-      {provider.status === 'ok' && (!Array.isArray(provider.items) || provider.items.length === 0) && probe === undefined && (
+      {provider.status === 'ok' && (!Array.isArray(provider.items) || provider.items.length === 0) && (
         <span className="dso-provider-msg">{t('panel.empty')}</span>
-      )}
-      {probe !== undefined && (
-        <>
-          <span className={`dso-probe-line${!probe.ok ? ' dso-probe-line--err' : ''}`}>
-            {probeLine}
-          </span>
-          {probe.ok && probe.models !== undefined && probe.models.length > 0 && (
-            <span className="dso-provider-msg">{probe.models.join(' · ')}</span>
-          )}
-        </>
       )}
     </div>
   );
@@ -551,7 +519,11 @@ function UsageRow({ item, alertPct, t }: { item: StatusItem; alertPct: number; t
     typeof item.percent === 'number' ? Math.max(0, Math.min(100, item.percent)) : undefined;
   const value =
     item.display ??
-    (item.remaining !== undefined ? t('item.remaining', { n: item.remaining }) : '');
+    (percent !== undefined
+      ? `${Math.round(percent * 10) / 10}%`
+      : item.remaining !== undefined
+        ? t('item.remaining', { n: item.remaining })
+        : '');
   const reset = resetText(item.resetAt, t);
   return (
     <div className="dso-item">

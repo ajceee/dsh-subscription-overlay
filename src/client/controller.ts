@@ -100,7 +100,9 @@ export function summarizeProvider(p: ProviderState): string {
       ? '5h'
       : /7\s*d/i.test(item.label)
         ? '7d'
-        : /month/i.test(item.label)
+        : /30\s*d/i.test(item.label)
+          ? '30d'
+          : /month/i.test(item.label)
           ? 'mo'
           : /primary/i.test(item.label)
             ? 'pri'
