@@ -150,7 +150,17 @@ const num = (v: unknown): number | undefined =>
   typeof v === 'number' && Number.isFinite(v) ? v : undefined
 
 /* ── fresh fetches (SPIKE §2.1 request/response shapes) ── */
+
+/** Anthropic throttles the OAuth usage endpoint per token. The same token is
+ *  polled by the CLI, WezTerm quota widgets and this overlay, so 429s happen.
+ *  While cooling down we fail fast without another network call. */
+let claudeCooldownUntil = 0
 async function fetchClaude(token: string): Promise<ProviderRow> {
+  const limited = (): ProviderRow => ({
+    id: 'claude', label: 'Claude', status: 'error',
+    message: 'rate limited by Anthropic — retrying automatically', items: [],
+  })
+  if (Date.now() < claudeCooldownUntil) return limited()
   try {
     const resp = await fetch('https://api.anthropic.com/api/oauth/usage', {
       headers: {
@@ -163,6 +173,18 @@ async function fetchClaude(token: string): Promise<ProviderRow> {
     })
     if (!resp.ok) {
       const auth = resp.status === 401 || resp.status === 403
+      if (resp.status === 429) {
+        // Honor Anthropic's retry-after (seconds or HTTP date), default 60s.
+        let waitMs = 60_000
+        const ra = resp.headers.get('retry-after')
+        if (ra) {
+          const secs = Number(ra)
+          if (Number.isFinite(secs)) waitMs = Math.min(secs, 300) * 1000
+          else { const t = Date.parse(ra); if (!Number.isNaN(t)) waitMs = Math.min(Math.max(t - Date.now(), 1000), 300_000) }
+        }
+        claudeCooldownUntil = Date.now() + waitMs
+        return limited()
+      }
       return { id: 'claude', label: 'Claude', status: 'error', message: auth ? 'auth failed — re-login in Subscriptions settings' : `HTTP ${resp.status}`, items: [] }
     }
     const b: any = await resp.json()
