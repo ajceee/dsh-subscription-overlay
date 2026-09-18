@@ -74,6 +74,12 @@ export interface ProviderRow {
 export declare function fetchCommandcode(apiKey: string): Promise<ProviderRow>;
 export declare function appendBurn(burn: Record<string, Array<[number, number]>>, model: string, tokens: number, now?: number): Record<string, Array<[number, number]>>;
 export declare function monthToDate(burn: Record<string, Array<[number, number]>>, now?: Date): number;
+export interface ProviderCatalogEntry {
+    key: string;
+    label: string;
+    detail: string;
+    supported: boolean;
+}
 interface SettingsPatch {
     enabled?: boolean;
     pollMinutes?: number;

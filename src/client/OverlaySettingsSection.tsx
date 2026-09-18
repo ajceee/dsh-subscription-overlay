@@ -1,13 +1,16 @@
-﻿/**
- * `settings.section` page for the overlay (order ~56, next to Task Router).
+/**
+ * `settings.section` page for the overlay.
  *
- * Controls (SPIKE §4): master overlay toggle, four provider toggles, poll
- * interval, alert %, commandcode monthly budget input, hotkey hint.
+ * Grouped layout: General / Appearance / Refresh / Alerts / Providers.
+ * Provider rows render from the host `providerCatalog` (/status), so new
+ * llm-pi-ai providers appear automatically (marked unsupported until a
+ * bespoke quota fetcher exists). Poll interval, alert threshold and overlay
+ * mode are dropdowns; the hotkey is display-only.
  * Reads the current config from GET /api/status and writes through
- * POST /api/settings (the t2 host owns validation + persistence; the client
+ * POST /api/settings (the host owns validation + persistence; the client
  * only sends well-formed values and surfaces host errors).
  *
- * API keys never live here — credential refs only (SPIKE §4 rules).
+ * API keys never live here — credential refs only.
  *
  * @module dsh-subscription-overlay/client/OverlaySettingsSection
  */
@@ -17,29 +20,39 @@ import type { SettingsPatch, StatusResponse } from './types.ts';
 
 const S = {
   'settings.title': 'Subscription Overlay',
-  'settings.desc': 'Controls the desktop floater and the 4-provider quota panel. No API keys live here — credentials stay in the DSH credentials domain.',
+  'settings.desc': 'Controls the desktop floater and the quota panel. New providers you configure under llm-pi-ai appear below automatically; quota bars need a dedicated fetcher per vendor.',
+  'settings.general': 'General',
   'settings.enabled': 'Show overlay',
-  'settings.enabledHint': 'Off unmounts the pill/ring AND the panel and stops polling.',
+  'settings.enabledHint': 'Off unmounts the pill/ring and the panel and stops background refreshes.',
+  'settings.appearance': 'Appearance',
+  'settings.mode': 'Floater style',
+  'settings.modeHint': 'Pill shows provider names; ring shows remaining quota as a circle.',
+  'settings.mode.pill': 'Pill',
+  'settings.mode.ring': 'Ring',
+  'settings.hotkey': 'Toggle hotkey',
+  'settings.hotkeyHint': 'Press anywhere to show or hide the overlay.',
+  'settings.refresh': 'Auto-refresh',
+  'settings.pollMinutes': 'Check quotas every',
+  'settings.pollHint': 'Manual Refresh in the panel always fetches immediately.',
+  'settings.poll.1': 'Every minute',
+  'settings.poll.2': 'Every 2 minutes',
+  'settings.poll.5': 'Every 5 minutes',
+  'settings.poll.10': 'Every 10 minutes',
+  'settings.poll.15': 'Every 15 minutes',
+  'settings.poll.30': 'Every 30 minutes',
+  'settings.poll.60': 'Every hour',
+  'settings.alerts': 'Alerts',
+  'settings.alertPct': 'Warn me at',
+  'settings.alertHint': 'Bars turn red and the floater shows a badge once usage reaches this level.',
+  'settings.alertSuffix': 'used',
   'settings.providers': 'Providers',
-  'settings.provider.claude': 'Claude (5h / 7d)',
-  'settings.provider.codex': 'Codex (primary / secondary)',
-  'settings.provider.opencodeGo': 'opencode-go (5h / 7d / monthly)',
-  'settings.provider.commandcode': 'commandcode (probe + monthly burn)',
-  'settings.pollMinutes': 'Poll interval (minutes)',
-  'settings.pollHint': '1–60 minutes.',
-  'settings.alertPct': 'Alert threshold (%)',
-  'settings.alertHint': 'Bars turn red and the pill shows a badge at/above this usage.',
-  'settings.budget': 'commandcode monthly budget (tokens)',
-  'settings.budgetHint': '0 = track burn only, no percentage.',
-  'settings.hotkey': 'Hotkey',
+  'settings.providersHint': 'Switch a provider off to hide it from the panel.',
+  'settings.unsupported': 'Quota not supported yet',
   'settings.save': 'Save',
   'settings.saving': 'Saving…',
   'settings.saved': 'Saved',
   'settings.loadError': 'Failed to read settings: {message}',
   'settings.saveError': 'Failed to save: {message}',
-  'settings.invalidPoll': 'Poll interval must be an integer 1–60.',
-  'settings.invalidAlert': 'Alert threshold must be an integer 1–100.',
-  'settings.invalidBudget': 'Monthly budget must be an integer >= 0.',
 } as const;
 
 type ExtraKey = keyof typeof S;
@@ -52,53 +65,77 @@ function tx(key: ExtraKey, params?: Record<string, string | number>): string {
   return text;
 }
 
+interface CatalogEntry {
+  key: string;
+  label: string;
+  detail: string;
+  supported: boolean;
+}
+
 interface SectionForm {
   enabled: boolean;
-  claude: boolean;
-  codex: boolean;
-  opencodeGo: boolean;
-  commandcode: boolean;
+  providers: Record<string, boolean>;
+  catalog: CatalogEntry[];
   pollMinutes: string;
   alertPct: string;
-  budget: string;
   mode: 'pill' | 'ring';
   hotkey: string;
 }
 
 const DEFAULT_FORM: SectionForm = {
   enabled: true,
-  claude: true,
-  codex: true,
-  opencodeGo: true,
-  commandcode: true,
+  providers: { claude: true, codex: true, opencodeGo: true, commandcode: true },
+  catalog: [],
   pollMinutes: '5',
   alertPct: '85',
-  budget: '0',
   mode: 'pill',
   hotkey: 'Ctrl+Shift+S',
 };
 
+const POLL_OPTIONS = ['1', '2', '5', '10', '15', '30', '60'];
+const ALERT_OPTIONS = ['50', '60', '70', '80', '85', '90', '95'];
+
 function formFromStatus(status: StatusResponse): SectionForm {
   const raw = (status['settings'] ?? {}) as Record<string, unknown>;
-  const providers = (raw['providers'] ?? {}) as Record<string, unknown>;
+  const saved = (raw['providers'] ?? {}) as Record<string, unknown>;
   const overlay = (raw['overlay'] ?? status['overlay'] ?? {}) as { mode?: 'pill' | 'ring'; hotkey?: string };
-  const pick = (value: unknown, fallback: string): string =>
-    typeof value === 'number' && Number.isFinite(value) ? String(value) : fallback;
+  const catalogRaw = status['providerCatalog'];
+  const catalog: CatalogEntry[] = Array.isArray(catalogRaw)
+    ? (catalogRaw as Record<string, unknown>[]).map((e) => ({
+        key: typeof e['key'] === 'string' ? e['key'] : '',
+        label: typeof e['label'] === 'string' ? e['label'] : String(e['key'] ?? ''),
+        detail: typeof e['detail'] === 'string' ? e['detail'] : '',
+        supported: e['supported'] === true,
+      })).filter((e) => e.key !== '')
+    : [];
+  const providers: Record<string, boolean> = {};
+  for (const e of catalog) {
+    const v = saved[e.key];
+    providers[e.key] = typeof v === 'boolean' ? v : true;
+  }
+  // Back-compat: keep known keys even if the catalog is missing (cold host).
+  for (const k of ['claude', 'codex', 'opencodeGo', 'commandcode']) {
+    if (!(k in providers)) {
+      const v = saved[k];
+      providers[k] = typeof v === 'boolean' ? v : true;
+    }
+  }
+  const pick = (value: unknown, options: string[], fallback: string): string => {
+    const s = typeof value === 'number' && Number.isFinite(value) ? String(value) : fallback;
+    return options.includes(s) ? s : fallback;
+  };
   return {
     enabled: typeof raw['enabled'] === 'boolean' ? raw['enabled'] : (status['enabled'] ?? true),
-    claude: typeof providers['claude'] === 'boolean' ? providers['claude'] : true,
-    codex: typeof providers['codex'] === 'boolean' ? providers['codex'] : true,
-    opencodeGo: typeof providers['opencodeGo'] === 'boolean' ? providers['opencodeGo'] : true,
-    commandcode: typeof providers['commandcode'] === 'boolean' ? providers['commandcode'] : true,
-    pollMinutes: pick(raw['pollMinutes'] ?? status['pollMinutes'], '5'),
-    alertPct: pick(raw['alertPct'] ?? status['alertPct'], '85'),
-    budget: pick(raw['commandcodeMonthlyBudget'], '0'),
+    providers,
+    catalog,
+    pollMinutes: pick(raw['pollMinutes'] ?? status['pollMinutes'], POLL_OPTIONS, '5'),
+    alertPct: pick(raw['alertPct'] ?? status['alertPct'], ALERT_OPTIONS, '85'),
     mode: overlay.mode === 'ring' ? 'ring' : 'pill',
     hotkey: typeof overlay.hotkey === 'string' && overlay.hotkey !== '' ? overlay.hotkey : 'Ctrl+Shift+S',
   };
 }
 
-/** Mirror persisted t6 settings into the overlay's localStorage keys (no second GET). */
+/** Mirror persisted settings into the overlay's localStorage keys (no second GET). */
 function mirrorSettingsToLocal(settings: Record<string, unknown> | undefined): void {
   if (!settings) return;
   try {
@@ -139,7 +176,6 @@ async function api(path: string, body?: unknown): Promise<Record<string, unknown
 
 /** Settings section body (the shell provides nav + header around it). */
 export function OverlaySettingsSection(): React.JSX.Element {
-
   const [form, setForm] = useState<SectionForm>(DEFAULT_FORM);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -164,47 +200,35 @@ export function OverlaySettingsSection(): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const setProvider = (key: string, value: boolean): void => {
+    setForm((prev) => ({ ...prev, providers: { ...prev.providers, [key]: value } }));
+    setSaved(false);
+  };
+
   const set = <K extends keyof SectionForm>(key: K, value: SectionForm[K]): void => {
     setForm((prev) => ({ ...prev, [key]: value }));
     setSaved(false);
   };
 
   const save = (): void => {
-    const poll = Number(form.pollMinutes);
-    const alert = Number(form.alertPct);
-    const budget = Number(form.budget);
-    if (!Number.isInteger(poll) || poll < 1 || poll > 60) {
-      setError(tx('invalidPoll'));
-      return;
-    }
-    if (!Number.isInteger(alert) || alert < 1 || alert > 100) {
-      setError(tx('invalidAlert'));
-      return;
-    }
-    if (!Number.isInteger(budget) || budget < 0) {
-      setError(tx('invalidBudget'));
-      return;
-    }
     const patch: SettingsPatch = {
       enabled: form.enabled,
-      pollMinutes: poll,
-      alertPct: alert,
+      pollMinutes: Number(form.pollMinutes),
+      alertPct: Number(form.alertPct),
       providers: {
-        claude: form.claude,
-        codex: form.codex,
-        opencodeGo: form.opencodeGo,
-        commandcode: form.commandcode,
+        claude: form.providers['claude'] ?? true,
+        codex: form.providers['codex'] ?? true,
+        opencodeGo: form.providers['opencodeGo'] ?? true,
+        commandcode: form.providers['commandcode'] ?? true,
       },
-      commandcodeMonthlyBudget: budget,
       overlay: { mode: form.mode },
     };
     setSaving(true);
     setError('');
     api('/settings', patch)
       .then((result) => {
-        // t6 seam responds { ok: true, settings }: mirror the persisted
-        // values into localStorage without a second GET, so the overlay
-        // pill/ring picks them up immediately.
+        // Mirror the persisted values into localStorage without a second
+        // GET, so the overlay pill/ring picks them up immediately.
         mirrorSettingsToLocal(result['settings'] as Record<string, unknown> | undefined);
         setSaved(true);
       })
@@ -219,78 +243,123 @@ export function OverlaySettingsSection(): React.JSX.Element {
   if (loading) {
     return (
       <div className="dso-section">
-        <span className="dso-section-hint">{'Refreshing\u2026'}</span>
+        <span className="dso-section-hint">{'Refreshing…'}</span>
       </div>
     );
   }
 
+  const rows = form.catalog.length > 0
+    ? form.catalog
+    : ['claude', 'codex', 'opencodeGo', 'commandcode'].map((key) => ({
+        key,
+        label: key,
+        detail: '',
+        supported: true,
+      }));
+
   return (
     <div className="dso-section">
       <span className="dso-section-hint">{tx('settings.desc')}</span>
-      <div className="dso-section-row">
-        <label htmlFor="dso-settings-enabled">{tx('settings.enabled')}</label>
-        <Switch id="dso-settings-enabled" on={form.enabled} onFlip={() => set('enabled', !form.enabled)} />
+
+      <div className="dso-section-group">
+        <span className="dso-section-group-title">{tx('settings.general')}</span>
+        <div className="dso-section-row">
+          <label htmlFor="dso-settings-enabled">{tx('settings.enabled')}</label>
+          <Switch id="dso-settings-enabled" on={form.enabled} onFlip={() => set('enabled', !form.enabled)} />
+        </div>
+        <span className="dso-section-hint">{tx('settings.enabledHint')}</span>
       </div>
-      <span className="dso-section-hint">{tx('settings.enabledHint')}</span>
-      <div className="dso-section-row">
-        <span style={{ flex: 1 }}>{tx('settings.providers')}</span>
+
+      <div className="dso-section-group">
+        <span className="dso-section-group-title">{tx('settings.appearance')}</span>
+        <div className="dso-section-row">
+          <label htmlFor="dso-settings-mode">{tx('settings.mode')}</label>
+          <select
+            id="dso-settings-mode"
+            className="dso-select"
+            value={form.mode}
+            onChange={(e) => set('mode', e.currentTarget.value === 'ring' ? 'ring' : 'pill')}
+          >
+            <option value="pill">{tx('settings.mode.pill')}</option>
+            <option value="ring">{tx('settings.mode.ring')}</option>
+          </select>
+        </div>
+        <span className="dso-section-hint">{tx('settings.modeHint')}</span>
+        <div className="dso-section-row">
+          <span style={{ flex: 1 }}>{tx('settings.hotkey')}</span>
+          <code>{form.hotkey}</code>
+        </div>
+        <span className="dso-section-hint">{tx('settings.hotkeyHint')}</span>
       </div>
-      <div className="dso-section-row">
-        <label htmlFor="dso-settings-claude">{tx('settings.provider.claude')}</label>
-        <Switch id="dso-settings-claude" on={form.claude} onFlip={() => set('claude', !form.claude)} />
+
+      <div className="dso-section-group">
+        <span className="dso-section-group-title">{tx('settings.refresh')}</span>
+        <div className="dso-section-row">
+          <label htmlFor="dso-settings-poll">{tx('settings.pollMinutes')}</label>
+          <select
+            id="dso-settings-poll"
+            className="dso-select"
+            value={form.pollMinutes}
+            onChange={(e) => set('pollMinutes', e.currentTarget.value)}
+          >
+            {POLL_OPTIONS.map((v) => (
+              <option key={v} value={v}>{tx(`settings.poll.${v}` as ExtraKey)}</option>
+            ))}
+          </select>
+        </div>
+        <span className="dso-section-hint">{tx('settings.pollHint')}</span>
       </div>
-      <div className="dso-section-row">
-        <label htmlFor="dso-settings-codex">{tx('settings.provider.codex')}</label>
-        <Switch id="dso-settings-codex" on={form.codex} onFlip={() => set('codex', !form.codex)} />
+
+      <div className="dso-section-group">
+        <span className="dso-section-group-title">{tx('settings.alerts')}</span>
+        <div className="dso-section-row">
+          <label htmlFor="dso-settings-alert">{tx('settings.alertPct')}</label>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <select
+              id="dso-settings-alert"
+              className="dso-select"
+              value={form.alertPct}
+              onChange={(e) => set('alertPct', e.currentTarget.value)}
+            >
+              {ALERT_OPTIONS.map((v) => (
+                <option key={v} value={v}>{v}%</option>
+              ))}
+            </select>
+            <span className="dso-section-hint">{tx('settings.alertSuffix')}</span>
+          </span>
+        </div>
+        <span className="dso-section-hint">{tx('settings.alertHint')}</span>
       </div>
-      <div className="dso-section-row">
-        <label htmlFor="dso-settings-opencode">{tx('settings.provider.opencodeGo')}</label>
-        <Switch id="dso-settings-opencode" on={form.opencodeGo} onFlip={() => set('opencodeGo', !form.opencodeGo)} />
+
+      <div className="dso-section-group">
+        <span className="dso-section-group-title">{tx('settings.providers')}</span>
+        <span className="dso-section-hint">{tx('settings.providersHint')}</span>
+        {rows.map((entry) => (
+          <div className="dso-section-row" key={entry.key}>
+            <span style={{ flex: 1 }}>
+              <span>{entry.label}</span>
+              {entry.detail !== '' && (
+                <span className="dso-section-note">{entry.supported ? ` · ${entry.detail}` : ` · ${tx('settings.unsupported')}`}</span>
+              )}
+              {!entry.supported && entry.detail === '' && (
+                <span className="dso-section-note">{` · ${tx('settings.unsupported')}`}</span>
+              )}
+            </span>
+            <Switch
+              id={`dso-settings-provider-${entry.key}`}
+              on={entry.supported ? (form.providers[entry.key] ?? true) : false}
+              onFlip={() => {
+                if (entry.supported) setProvider(entry.key, !(form.providers[entry.key] ?? true));
+              }}
+              disabled={!entry.supported}
+            />
+          </div>
+        ))}
       </div>
-      <div className="dso-section-row">
-        <label htmlFor="dso-settings-commandcode">{tx('settings.provider.commandcode')}</label>
-        <Switch id="dso-settings-commandcode" on={form.commandcode} onFlip={() => set('commandcode', !form.commandcode)} />
-      </div>
-      <div className="dso-section-row">
-        <label htmlFor="dso-settings-poll">{tx('settings.pollMinutes')}</label>
-        <input
-          id="dso-settings-poll"
-          className="dso-input"
-          inputMode="numeric"
-          value={form.pollMinutes}
-          onChange={(e) => set('pollMinutes', e.currentTarget.value)}
-        />
-      </div>
-      <span className="dso-section-hint">{tx('settings.pollHint')}</span>
-      <div className="dso-section-row">
-        <label htmlFor="dso-settings-alert">{tx('settings.alertPct')}</label>
-        <input
-          id="dso-settings-alert"
-          className="dso-input"
-          inputMode="numeric"
-          value={form.alertPct}
-          onChange={(e) => set('alertPct', e.currentTarget.value)}
-        />
-      </div>
-      <span className="dso-section-hint">{tx('settings.alertHint')}</span>
-      <div className="dso-section-row">
-        <label htmlFor="dso-settings-budget">{tx('settings.budget')}</label>
-        <input
-          id="dso-settings-budget"
-          className="dso-input"
-          inputMode="numeric"
-          value={form.budget}
-          onChange={(e) => set('budget', e.currentTarget.value)}
-        />
-      </div>
-      <span className="dso-section-hint">{tx('settings.budgetHint')}</span>
-      <div className="dso-section-row">
-        <span style={{ flex: 1 }}>{tx('settings.hotkey')}</span>
-        <code>{form.hotkey}</code>
-      </div>
+
       {error !== '' && <span className="dso-section-error">{error}</span>}
       {saved && error === '' && <span className="dso-section-ok">{tx('settings.saved')}</span>}
-      <div className="dso-section-row">
+      <div className="dso-section-row dso-section-foot">
         <button type="button" className="dso-btn dso-btn--primary" disabled={saving} onClick={save}>
           {saving ? tx('settings.saving') : tx('settings.save')}
         </button>
@@ -299,13 +368,14 @@ export function OverlaySettingsSection(): React.JSX.Element {
   );
 }
 
-function Switch({ id, on, onFlip }: { id: string; on: boolean; onFlip: () => void }): React.JSX.Element {
+function Switch({ id, on, onFlip, disabled }: { id: string; on: boolean; onFlip: () => void; disabled?: boolean }): React.JSX.Element {
   return (
     <button
       id={id}
       type="button"
       role="switch"
       aria-checked={on}
+      disabled={disabled === true}
       className={`dso-switch${on ? ' dso-switch--on' : ''}`}
       onClick={onFlip}
     >

@@ -149,4 +149,16 @@ export const PANEL_CSS = `
 .dso-switch--on { background: var(--dsw-static-blue-500, #3b82f6); }
 .dso-switch-knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left 0.15s ease; }
 .dso-switch--on .dso-switch-knob { left: 18px; }
+.dso-switch:disabled { opacity: 0.45; cursor: not-allowed; }
+.dso-section-group { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.22)); border-radius: 10px; }
+.dso-section-group-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dsw-alias-label-secondary, #999); }
+.dso-section-note { font-size: 11px; color: var(--dsw-alias-label-tertiary, #777); }
+.dso-section-foot { justify-content: flex-end; margin-top: 2px; }
+.dso-select {
+  padding: 6px 8px; border-radius: 8px; font-size: 12px; cursor: pointer;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.3));
+  background: var(--dsw-alias-bg-layer-1, transparent); color: var(--dsw-alias-label-primary, inherit); outline: none;
+}
+.dso-select:focus { border-color: var(--dsw-alias-brand-primary, #5b6cff); }
+.dso-select option { color: #111; }
 `;

@@ -351,6 +351,27 @@ export function monthToDate(burn: Record<string, Array<[number, number]>>, now =
   return sum
 }
 
+/** Providers with a bespoke quota fetcher: settings-form key → display info. */
+const KNOWN_QUOTA = {
+  claude:      { label: 'Claude',      detail: '5h / 7d windows' },
+  codex:       { label: 'Codex',       detail: '5h / 7d windows' },
+  opencodeGo:  { label: 'OpenCode Go', detail: '5h / 7d / 30d windows' },
+  commandcode: { label: 'CommandCode', detail: '5h / 7d windows' },
+} as const
+
+export interface ProviderCatalogEntry {
+  key: string
+  label: string
+  detail: string
+  supported: boolean
+}
+
+/** llm-pi-ai provider id → settings-form key (unmapped ids stay as-is). */
+const LLM_ID_TO_KEY: Record<string, string> = {
+  'opencode-go': 'opencodeGo',
+  'command-code': 'commandcode',
+}
+
 class OverlayController {
   constructor(
     private ctx: Context,
@@ -367,7 +388,27 @@ class OverlayController {
   }
   private llmProvider(id: string) { return this.getLlmProviders().find((p) => p.id === id) }
 
-  async refresh(): Promise<{ refreshedAt: number; providers: ProviderRow[] }> {
+  /** Dynamic provider catalog: the 4 quota-capable providers first, then any
+   *  extra llm-pi-ai providers (auto-detected, marked unsupported until a
+   *  bespoke quota fetcher exists — each vendor needs its own endpoint/auth). */
+  providerCatalog(): ProviderCatalogEntry[] {
+    const out: ProviderCatalogEntry[] = []
+    const seen = new Set<string>()
+    for (const key of Object.keys(KNOWN_QUOTA)) {
+      const k = KNOWN_QUOTA[key as keyof typeof KNOWN_QUOTA]
+      seen.add(key)
+      out.push({ key, label: k.label, detail: k.detail, supported: true })
+    }
+    for (const p of this.getLlmProviders()) {
+      const key = LLM_ID_TO_KEY[p.id] ?? p.id
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push({ key, label: p.id, detail: 'Quota not supported yet', supported: false })
+    }
+    return out
+  }
+
+  async refresh(): Promise<{ refreshedAt: number; providers: ProviderRow[]; providerCatalog: ProviderCatalogEntry[] }> {
     const cfg = this.cfg()
     const creds = this.getCredentials()
     const now = Date.now()
@@ -381,6 +422,7 @@ class OverlayController {
           off('opencode-go', 'OpenCode Go'),
           off('commandcode', 'CommandCode'),
         ],
+        providerCatalog: this.providerCatalog(),
       }
     }
     const providers: ProviderRow[] = []
@@ -399,7 +441,7 @@ class OverlayController {
     } else providers.push(off('opencode-go', 'OpenCode Go'))
     if (cfg.providers.commandcode) providers.push(await this.commandcodeRow(cfg, creds))
     else providers.push(off('commandcode', 'CommandCode'))
-    return { refreshedAt: now, providers }
+    return { refreshedAt: now, providers, providerCatalog: this.providerCatalog() }
   }
 
   private async commandcodeRow(cfg: Config, creds: any): Promise<ProviderRow> {
