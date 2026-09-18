@@ -425,23 +425,31 @@ class OverlayController {
         providerCatalog: this.providerCatalog(),
       }
     }
-    const providers: ProviderRow[] = []
-    if (cfg.providers.claude) {
-      const t = await claudeToken(creds)
-      providers.push(t ? await fetchClaude(t) : { id: 'claude', label: 'Claude', status: 'error', message: 'no token — login via Subscriptions settings', items: [] })
-    } else providers.push(off('claude', 'Claude'))
-    if (cfg.providers.codex) {
-      const t = await codexToken(creds)
-      providers.push(t ? await fetchCodex(t) : { id: 'codex', label: 'Codex', status: 'error', message: 'no token — login via Subscriptions settings', items: [] })
-    } else providers.push(off('codex', 'Codex'))
-    if (cfg.providers.opencodeGo) {
-      const env = this.llmProvider('opencode-go')?.apiKeyEnv || 'OPENCODE_GO_API_KEY'
-      const t = await opencodeGoToken(creds, env)
-      providers.push(t ? await fetchOpencodeGo(t) : { id: 'opencode-go', label: 'OpenCode Go', status: 'error', message: 'no token — login via Subscriptions settings', items: [] })
-    } else providers.push(off('opencode-go', 'OpenCode Go'))
-    if (cfg.providers.commandcode) providers.push(await this.commandcodeRow(cfg, creds))
-    else providers.push(off('commandcode', 'CommandCode'))
-    return { refreshedAt: now, providers, providerCatalog: this.providerCatalog() }
+    // All four providers fetch in parallel — wall time is the slowest
+    // provider, not the sum (previously sequential awaits).
+    const [claude, codex, opencodeGo, commandcode] = await Promise.all([
+      (async (): Promise<ProviderRow> => {
+        if (!cfg.providers.claude) return off('claude', 'Claude')
+        const t = await claudeToken(creds)
+        return t ? fetchClaude(t) : { id: 'claude', label: 'Claude', status: 'error', message: 'no token — login via Subscriptions settings', items: [] }
+      })(),
+      (async (): Promise<ProviderRow> => {
+        if (!cfg.providers.codex) return off('codex', 'Codex')
+        const t = await codexToken(creds)
+        return t ? fetchCodex(t) : { id: 'codex', label: 'Codex', status: 'error', message: 'no token — login via Subscriptions settings', items: [] }
+      })(),
+      (async (): Promise<ProviderRow> => {
+        if (!cfg.providers.opencodeGo) return off('opencode-go', 'OpenCode Go')
+        const env = this.llmProvider('opencode-go')?.apiKeyEnv || 'OPENCODE_GO_API_KEY'
+        const t = await opencodeGoToken(creds, env)
+        return t ? fetchOpencodeGo(t) : { id: 'opencode-go', label: 'OpenCode Go', status: 'error', message: 'no token — login via Subscriptions settings', items: [] }
+      })(),
+      (async (): Promise<ProviderRow> => {
+        if (!cfg.providers.commandcode) return off('commandcode', 'CommandCode')
+        return this.commandcodeRow(cfg, creds)
+      })(),
+    ])
+    return { refreshedAt: now, providers: [claude, codex, opencodeGo, commandcode], providerCatalog: this.providerCatalog() }
   }
 
   private async commandcodeRow(cfg: Config, creds: any): Promise<ProviderRow> {
@@ -607,6 +615,7 @@ async function route(req: any, res: any, ctrl: OverlayController) {
   const method = req.method ?? 'GET'
   try {
     if (method === 'GET' && path === '/status') return send(res, 200, { ...ctrl.status(), ...(await ctrl.refresh()) })
+    if (method === 'GET' && path === '/meta') return send(res, 200, { ...ctrl.status(), providerCatalog: ctrl.providerCatalog() })
     if (method === 'POST') {
       if (req.headers[CSRF_HEADER] === undefined) return send(res, 403, { error: 'missing required custom header' })
       if (path === '/refresh') return send(res, 200, await ctrl.refresh())

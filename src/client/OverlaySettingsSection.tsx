@@ -184,7 +184,7 @@ export function OverlaySettingsSection(): React.JSX.Element {
 
   useEffect(() => {
     let live = true;
-    api('/status')
+    api('/meta')
       .then((status) => {
         if (live) setForm(formFromStatus(status as StatusResponse));
       })
