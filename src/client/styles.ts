@@ -157,8 +157,8 @@ export const PANEL_CSS = `
 .dso-select {
   padding: 6px 8px; border-radius: 8px; font-size: 12px; cursor: pointer;
   border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.3));
-  background: var(--dsw-alias-bg-layer-1, transparent); color: var(--dsw-alias-label-primary, inherit); outline: none;
+  background: var(--dsw-alias-bg-layer-2, rgba(20, 20, 28, 0.92)); color: var(--dsw-alias-label-primary, #eee); outline: none;
 }
 .dso-select:focus { border-color: var(--dsw-alias-brand-primary, #5b6cff); }
-.dso-select option { color: #111; }
+.dso-select option { background: var(--dsw-alias-bg-layer-2, #1a1a24); color: var(--dsw-alias-label-primary, #eee); }
 `;
