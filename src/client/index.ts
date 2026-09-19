@@ -15,9 +15,10 @@
  * @module dsh-subscription-overlay/client
  */
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime';
-import { MODE_KEY, OverlayController, POS_KEY, VISIBLE_KEY } from './controller.ts';
+import { DISPLAY_KEY, MODE_KEY, OverlayController, POS_KEY, VISIBLE_KEY } from './controller.ts';
 import { OverlaySettingsSection } from './OverlaySettingsSection.tsx';
-import { PANEL_CSS, STYLE_TAG_ID } from './styles.ts';
+import { DOCK_CSS, DOCK_HIDE_CSS, DOCK_HIDE_TAG_ID, DOCK_STYLE_TAG_ID, PANEL_CSS, STYLE_TAG_ID } from './styles.ts';
+import { DockBadge } from './DockBadge.tsx';
 import { SubscriptionPanel } from './SubscriptionPanel.tsx';
 
 /** Required services (cordis fiber inject). */
@@ -127,6 +128,58 @@ export function apply(ctx: ClientContext): void {
     console.error(`[${PLUGIN_ID}] overlay slot registration failed`, error);
   }
 
+  // Composer-dock badge (order 11, adjacent to the upstream
+  // `subscription-usage` pill at order 10). Session-bound inject face over
+  // the same snapshot store as the floater — only the mount point differs.
+  try {
+    ctx.slots.inject('conversation.composer.dock', () =>
+      ctx.slots.register(
+        {
+          name: 'conversation.composer.dock',
+          id: 'dso-dock-badge',
+          order: 11,
+          inject: () => controller.inject(),
+        },
+        DockBadge,
+      ),
+    );
+  } catch (error) {
+    console.error(`[${PLUGIN_ID}] dock slot registration failed`, error);
+  }
+
+  // Upstream-pill hide rule: mounted only while our dock badge is the active
+  // mount point (display dock + visible + enabled). llm-subscriptions stays
+  // ENABLED so OAuth refresh keeps auth.json alive.
+  try {
+    const syncDockHide = (): void => {
+      if (typeof document === 'undefined') return;
+      try {
+        const snapshot = controller.store.getSnapshot();
+        const want = snapshot.display === 'dock' && snapshot.visible && snapshot.enabled;
+        const selector = `style[data-plugin-css="${DOCK_HIDE_TAG_ID}"]`;
+        const existing = document.querySelector(selector);
+        if (want && existing === null) {
+          const tag = document.createElement('style');
+          tag.dataset['plugin'] = PLUGIN_ID;
+          tag.dataset['pluginCss'] = DOCK_HIDE_TAG_ID;
+          tag.textContent = DOCK_HIDE_CSS;
+          document.head.appendChild(tag);
+        } else if (!want && existing !== null) {
+          existing.remove();
+        }
+      } catch (error) {
+        console.error(`[${PLUGIN_ID}] dock-hide sync failed`, error);
+      }
+    };
+    const offDockHide = controller.store.subscribe(() => {
+      syncDockHide();
+    });
+    syncDockHide();
+    ctx.effect(() => offDockHide, `${PLUGIN_ID}: dock-hide`);
+  } catch (error) {
+    console.error(`[${PLUGIN_ID}] dock-hide effect failed`, error);
+  }
+
   try {
     ctx.slots.inject('settings.section', () =>
       ctx.slots.register(
@@ -169,17 +222,27 @@ function setVisible(controller: OverlayController, visible: boolean): void {
 
 /** Inject the panel stylesheet; the returned cleanup removes it on unload. */
 function injectStyles(): () => void {
+  const offPanel = injectStyleTag(STYLE_TAG_ID, PANEL_CSS);
+  const offDock = injectStyleTag(DOCK_STYLE_TAG_ID, DOCK_CSS);
+  return () => {
+    offPanel();
+    offDock();
+  };
+}
+
+/** Inject one plugin stylesheet; the returned cleanup removes it on unload. */
+function injectStyleTag(tagId: string, css: string): () => void {
   if (typeof document === 'undefined') return () => undefined;
-  if (document.querySelector(`style[data-plugin-css="${STYLE_TAG_ID}"]`) !== null) {
+  if (document.querySelector(`style[data-plugin-css="${tagId}"]`) !== null) {
     return () => undefined;
   }
   const tag = document.createElement('style');
   tag.dataset['plugin'] = PLUGIN_ID;
-  tag.dataset['pluginCss'] = STYLE_TAG_ID;
-  tag.textContent = PANEL_CSS;
+  tag.dataset['pluginCss'] = tagId;
+  tag.textContent = css;
   document.head.appendChild(tag);
   return () => tag.remove();
 }
 
 /** Re-exported for tests: persisted-preference keys and hotkey. */
-export const PREF_KEYS = { MODE_KEY, POS_KEY, VISIBLE_KEY, HOTKEY };
+export const PREF_KEYS = { MODE_KEY, POS_KEY, VISIBLE_KEY, DISPLAY_KEY, HOTKEY };

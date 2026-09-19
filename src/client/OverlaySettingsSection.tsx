@@ -29,6 +29,10 @@ const S = {
   'settings.modeHint': 'Pill shows provider names; ring shows remaining quota as a circle.',
   'settings.mode.pill': 'Pill',
   'settings.mode.ring': 'Ring',
+  'settings.display': 'Show quotas in',
+  'settings.displayHint': 'Dock replaces the Subscriptions pill in the composer; floater keeps the draggable desktop pill/ring.',
+  'settings.display.dock': 'Composer dock',
+  'settings.display.floater': 'Desktop floater',
   'settings.hotkey': 'Toggle hotkey',
   'settings.hotkeyHint': 'Press anywhere to show or hide the overlay.',
   'settings.refresh': 'Auto-refresh',
@@ -79,6 +83,7 @@ interface SectionForm {
   pollMinutes: string;
   alertPct: string;
   mode: 'pill' | 'ring';
+  display: 'dock' | 'floater';
   hotkey: string;
 }
 
@@ -89,6 +94,7 @@ const DEFAULT_FORM: SectionForm = {
   pollMinutes: '5',
   alertPct: '85',
   mode: 'pill',
+  display: 'dock',
   hotkey: 'Ctrl+Shift+S',
 };
 
@@ -98,7 +104,7 @@ const ALERT_OPTIONS = ['50', '60', '70', '80', '85', '90', '95'];
 function formFromStatus(status: StatusResponse): SectionForm {
   const raw = (status['settings'] ?? {}) as Record<string, unknown>;
   const saved = (raw['providers'] ?? {}) as Record<string, unknown>;
-  const overlay = (raw['overlay'] ?? status['overlay'] ?? {}) as { mode?: 'pill' | 'ring'; hotkey?: string };
+  const overlay = (raw['overlay'] ?? status['overlay'] ?? {}) as { mode?: 'pill' | 'ring'; hotkey?: string; display?: 'dock' | 'floater' };
   const catalogRaw = status['providerCatalog'];
   const catalog: CatalogEntry[] = Array.isArray(catalogRaw)
     ? (catalogRaw as Record<string, unknown>[]).map((e) => ({
@@ -131,6 +137,7 @@ function formFromStatus(status: StatusResponse): SectionForm {
     pollMinutes: pick(raw['pollMinutes'] ?? status['pollMinutes'], POLL_OPTIONS, '5'),
     alertPct: pick(raw['alertPct'] ?? status['alertPct'], ALERT_OPTIONS, '85'),
     mode: overlay.mode === 'ring' ? 'ring' : 'pill',
+    display: overlay.display === 'floater' ? 'floater' : 'dock',
     hotkey: typeof overlay.hotkey === 'string' && overlay.hotkey !== '' ? overlay.hotkey : 'Ctrl+Shift+S',
   };
 }
@@ -142,9 +149,12 @@ function mirrorSettingsToLocal(settings: Record<string, unknown> | undefined): v
     if (typeof settings['enabled'] === 'boolean') {
       window.localStorage.setItem('dsh-subscription-overlay:visible', settings['enabled'] ? '1' : '0');
     }
-    const overlay = settings['overlay'] as { mode?: unknown } | undefined;
+    const overlay = settings['overlay'] as { mode?: unknown; display?: unknown } | undefined;
     if (overlay?.mode === 'pill' || overlay?.mode === 'ring') {
       window.localStorage.setItem('dsh-subscription-overlay:mode', overlay.mode);
+    }
+    if (overlay?.display === 'dock' || overlay?.display === 'floater') {
+      window.localStorage.setItem('dsh-subscription-overlay:display', overlay.display);
     }
   } catch {
     /* private mode: keep in-memory only */
@@ -189,7 +199,7 @@ export function OverlaySettingsSection(): React.JSX.Element {
         if (live) setForm(formFromStatus(status as StatusResponse));
       })
       .catch((err: unknown) => {
-        if (live) setError(tx('loadError', { message: err instanceof Error ? err.message : String(err) }));
+        if (live) setError(tx('settings.loadError', { message: err instanceof Error ? err.message : String(err) }));
       })
       .finally(() => {
         if (live) setLoading(false);
@@ -221,7 +231,7 @@ export function OverlaySettingsSection(): React.JSX.Element {
         opencodeGo: form.providers['opencodeGo'] ?? true,
         commandcode: form.providers['commandcode'] ?? true,
       },
-      overlay: { mode: form.mode },
+      overlay: { mode: form.mode, display: form.display },
     };
     setSaving(true);
     setError('');
@@ -233,7 +243,7 @@ export function OverlaySettingsSection(): React.JSX.Element {
         setSaved(true);
       })
       .catch((err: unknown) => {
-        setError(tx('saveError', { message: err instanceof Error ? err.message : String(err) }));
+        setError(tx('settings.saveError', { message: err instanceof Error ? err.message : String(err) }));
       })
       .finally(() => {
         setSaving(false);
@@ -285,6 +295,19 @@ export function OverlaySettingsSection(): React.JSX.Element {
           </select>
         </div>
         <span className="dso-section-hint">{tx('settings.modeHint')}</span>
+        <div className="dso-section-row">
+          <label htmlFor="dso-settings-display">{tx('settings.display')}</label>
+          <select
+            id="dso-settings-display"
+            className="dso-select"
+            value={form.display}
+            onChange={(e) => set('display', e.currentTarget.value === 'floater' ? 'floater' : 'dock')}
+          >
+            <option value="dock">{tx('settings.display.dock')}</option>
+            <option value="floater">{tx('settings.display.floater')}</option>
+          </select>
+        </div>
+        <span className="dso-section-hint">{tx('settings.displayHint')}</span>
         <div className="dso-section-row">
           <span style={{ flex: 1 }}>{tx('settings.hotkey')}</span>
           <code>{form.hotkey}</code>

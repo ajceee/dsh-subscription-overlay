@@ -27,6 +27,8 @@ export interface OverlaySnapshot {
   /** Overlay visibility: false unmounts pill AND panel, stops polling. */
   visible: boolean;
   mode: 'pill' | 'ring';
+  /** Mount point: composer-dock pill (default) or frame floater. */
+  display: 'dock' | 'floater';
   refreshedAt: number;
   providers: ProviderState[];
   alertPct: number;
@@ -43,6 +45,7 @@ export const INITIAL: OverlaySnapshot = {
   open: false,
   visible: true,
   mode: 'pill',
+  display: 'dock',
   refreshedAt: 0,
   providers: [],
   alertPct: 85,
@@ -173,6 +176,7 @@ export class OverlayController {
         if (visible) void this.reload();
       },
       setMode: (mode: 'pill' | 'ring') => this.patch({ mode }),
+      setDisplay: (display: 'dock' | 'floater') => this.patch({ display }),
       refresh: () => {
         void this.refresh();
       },
@@ -233,7 +237,7 @@ export class OverlayController {
     const providers = Array.isArray(state['providers'])
       ? (state['providers'] as ProviderState[])
       : [];
-    const overlay = (state['overlay'] as { mode?: 'pill' | 'ring' } | undefined) ?? {};
+    const overlay = (state['overlay'] as { mode?: 'pill' | 'ring'; display?: 'dock' | 'floater' } | undefined) ?? {};
     const patch: Partial<OverlaySnapshot> = {
       loaded: true,
       refreshedAt: toEpochMs(state['refreshedAt']),
@@ -255,6 +259,14 @@ export class OverlayController {
       patch.mode = overlay.mode;
       try {
         window.localStorage.setItem(MODE_KEY, overlay.mode);
+      } catch {
+        /* private mode: keep in-memory only */
+      }
+    }
+    if (overlay.display === 'dock' || overlay.display === 'floater') {
+      patch.display = overlay.display;
+      try {
+        window.localStorage.setItem(DISPLAY_KEY, overlay.display);
       } catch {
         /* private mode: keep in-memory only */
       }
@@ -289,5 +301,7 @@ async function request(path: string, body: unknown): Promise<Record<string, unkn
 export const MODE_KEY = 'dsh-subscription-overlay:mode';
 /** localStorage key for overlay visibility ("1" | "0"). */
 export const VISIBLE_KEY = 'dsh-subscription-overlay:visible';
+/** localStorage key for the mount point (dock | floater). */
+export const DISPLAY_KEY = 'dsh-subscription-overlay:display';
 /** localStorage key for the user-dragged pill/ring position. */
 export const POS_KEY = 'dsh-subscription-overlay:pos';

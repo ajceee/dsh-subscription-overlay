@@ -19,6 +19,7 @@ export interface OverlaySnapshotFace {
   close: () => void;
   setVisible: (visible: boolean) => void;
   setMode: (mode: 'pill' | 'ring') => void;
+  setDisplay: (display: 'dock' | 'floater') => void;
   refresh: () => void;
   probe: () => void;
 }

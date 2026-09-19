@@ -26,6 +26,7 @@ export interface Config {
     overlay: {
         mode: 'pill' | 'ring';
         hotkey: string;
+        display: 'dock' | 'floater';
     };
     burn: Record<string, Array<[number, number]>>;
 }
@@ -56,6 +57,8 @@ export interface ProviderRow {
         resetAt: string;
     };
 }
+import { mapClaudeUsage } from './claude-usage.js';
+export { mapClaudeUsage };
 /**
  * Fetch CommandCode quota from the same four alpha endpoints the pi-commandcode-provider
  * and the cmd /usage command use (source: github.com/patlux/pi-commandcode-provider):
@@ -94,6 +97,7 @@ interface SettingsPatch {
     overlay?: {
         mode?: 'pill' | 'ring';
         hotkey?: string;
+        display?: 'dock' | 'floater';
     };
 }
 export declare function publicSettings(cfg: Config): {
@@ -110,6 +114,7 @@ export declare function publicSettings(cfg: Config): {
     overlay: {
         mode: "pill" | "ring";
         hotkey: string;
+        display: "dock" | "floater";
     };
 };
 export declare function validateSettingsPatch(patch: unknown): {
@@ -120,4 +125,3 @@ export declare function validateSettingsPatch(patch: unknown): {
     error: string;
 };
 export declare function apply(ctx: Context, config: Config): void;
-export {};

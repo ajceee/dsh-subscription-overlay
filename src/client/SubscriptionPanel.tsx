@@ -21,6 +21,7 @@ import {
   MODE_KEY,
   POS_KEY,
   VISIBLE_KEY,
+  DISPLAY_KEY,
   alertCount,
   headlineItem,
   summarizeProvider,
@@ -167,6 +168,12 @@ export function SubscriptionPanel(props: SubscriptionPanelProps): React.JSX.Elem
   useEffect(() => {
     props.setMode(mode);
     props.setVisible(loadVisible());
+    try {
+      const saved = window.localStorage.getItem(DISPLAY_KEY);
+      if (saved === 'dock' || saved === 'floater') props.setDisplay(saved);
+    } catch {
+      /* private mode: keep snapshot default */
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -184,6 +191,8 @@ export function SubscriptionPanel(props: SubscriptionPanelProps): React.JSX.Elem
 
   // Hidden toggle unmounts BOTH the pill/ring AND the panel (acceptance).
   if (!state.visible) return null;
+  // Dock mode moves the pill into the composer dock; the floater stays parked.
+  if (state.display !== 'floater') return null;
 
   const summary = state.providers
     .filter((p) => p.status === 'ok')

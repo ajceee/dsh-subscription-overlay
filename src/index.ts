@@ -10,7 +10,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -26,7 +27,7 @@ export interface Config {
   alertPct: number
   providers: { claude: boolean; codex: boolean; opencodeGo: boolean; commandcode: boolean }
   commandcodeMonthlyBudget: number
-  overlay: { mode: 'pill' | 'ring'; hotkey: string }
+  overlay: { mode: 'pill' | 'ring'; hotkey: string; display: 'dock' | 'floater' }
   burn: Record<string, Array<[number, number]>>
 }
 
@@ -44,7 +45,8 @@ export const Config = z.object({
   overlay: z.object({
     mode: z.union([z.const('pill'), z.const('ring')]).default('pill'),
     hotkey: z.string().default('Ctrl+Shift+S'),
-  }).default({ mode: 'pill' as const, hotkey: 'Ctrl+Shift+S' }),
+    display: z.union([z.const('dock'), z.const('floater')]).default('dock'),
+  }).default({ mode: 'pill' as const, hotkey: 'Ctrl+Shift+S', display: 'dock' as const }),
   burn: z.dict(z.array(z.array(z.number()))).default({}),
 }) as unknown as Config
 
@@ -109,28 +111,203 @@ async function readJsonFile(path: string): Promise<any | undefined> {
   try { return JSON.parse(await readFile(path, 'utf8')) } catch { return undefined }
 }
 
+/** Preemptive refresh window: upstream AccountTokenManager parity (5min). */
+const SUB_PREEMPT_MS = 5 * 60_000
+
+/** Normalized subscription session (camelCase store shape; snake_case tolerated on read). */
+interface SubSession {
+  accessToken: string
+  refreshToken?: string
+  expiresAt?: number
+  accountId?: string
+}
+
+const normStr = (v: unknown): string | undefined =>
+  typeof v === 'string' && v ? v : undefined
+const normMs = (v: unknown): number | undefined =>
+  typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined
+
+/** Pick the default account entry out of one provider's auth.json record. */
+function pickSubEntry(entry: any): { key: string; raw: any } | undefined {
+  if (!entry || typeof entry !== 'object') return undefined
+  const accounts = entry.accounts
+  if (accounts && typeof accounts === 'object' && !Array.isArray(accounts)) {
+    const keys = Object.keys(accounts)
+    if (keys.length === 0) return undefined
+    const def = entry.defaultAccount
+    const key: string = typeof def === 'string' && accounts[def] ? def : keys[0] as string
+    return { key, raw: accounts[key] }
+  }
+  // Legacy single-account shape (fields directly on the provider entry).
+  return { key: '', raw: entry }
+}
+
+function normSubSession(raw: any): SubSession | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const accessToken = normStr(raw.accessToken ?? raw.access_token)
+  if (!accessToken) return undefined
+  const sess: SubSession = { accessToken }
+  const refreshToken = normStr(raw.refreshToken ?? raw.refresh_token)
+  if (refreshToken) sess.refreshToken = refreshToken
+  const expiresAt = normMs(raw.expiresAt ?? raw.expires_at)
+  if (expiresAt !== undefined) sess.expiresAt = expiresAt
+  const accountId = normStr(raw.accountId ?? raw.account_id)
+  if (accountId) sess.accountId = accountId
+  return sess
+}
+
+function subAuthPath(): string {
+  return join(homedir(), '.dsh', 'plugins', 'subscriptions', 'auth.json')
+}
+
+/** Read one provider's default subscription session (accounts-map aware). */
+async function readSubSession(provider: 'claude' | 'codex'): Promise<{ key: string; session: SubSession } | undefined> {
+  const store = await readJsonFile(subAuthPath())
+  const picked = pickSubEntry(store?.[provider])
+  if (!picked) return undefined
+  const session = normSubSession(picked.raw)
+  return session ? { key: picked.key, session } : undefined
+}
+
+/** Persist refreshed fields onto the same account entry, preserving the rest of the file. */
+async function writeSubSession(provider: 'claude' | 'codex', key: string, patch: SubSession): Promise<void> {
+  const path = subAuthPath()
+  const store: any = await readJsonFile(path)
+  if (!store || typeof store !== 'object' || Array.isArray(store)) return
+  const entry = store[provider]
+  if (!entry || typeof entry !== 'object') return
+  const target = entry.accounts && typeof entry.accounts === 'object' && key
+    ? entry.accounts[key]
+    : entry
+  if (!target || typeof target !== 'object') return
+  // Write back in whichever case the entry already uses (never rename fields).
+  if (patch.accessToken) {
+    if ('accessToken' in target || !('access_token' in target)) target.accessToken = patch.accessToken
+    else target.access_token = patch.accessToken
+  }
+  if (patch.refreshToken) {
+    if ('refreshToken' in target || !('refresh_token' in target)) target.refreshToken = patch.refreshToken
+    else target.refresh_token = patch.refreshToken
+  }
+  if (patch.expiresAt !== undefined) {
+    if ('expiresAt' in target || !('expires_at' in target)) target.expiresAt = patch.expiresAt
+    else target.expires_at = patch.expiresAt
+  }
+  await writeFile(path, JSON.stringify(store, null, 2))
+}
+
+const CLAUDE_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
+const CLAUDE_TOKEN_URL = 'https://claude.ai/v1/oauth/token'
+const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
+const CODEX_TOKEN_URL = 'https://auth.openai.com/oauth/token'
+
+/** Permanent grant rejection (upstream isClaudePermanentRefreshError parity). */
+function isPermanentOAuthError(body: any): boolean {
+  const code = typeof body?.error === 'string' ? body.error : ''
+  return code === 'invalid_grant' || code === 'invalid_token'
+}
+
+/** Best-effort JWT exp read (codex expiry fallback; hint only, never verified). */
+function decodeJwtExp(accessToken: string): number | undefined {
+  try {
+    const part = accessToken.split('.')[1]
+    if (!part) return undefined
+    const payload = JSON.parse(Buffer.from(part, 'base64url').toString('utf8')) as any
+    return normMs(payload?.exp) !== undefined ? (payload.exp as number) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Refresh one stored session via its provider token endpoint. Returns the
+ * fresh session, the stale session on transient failure (use it), or
+ * undefined when the grant is permanently rejected (caller surfaces re-login).
+ */
+async function refreshSubSession(provider: 'claude' | 'codex', sess: SubSession): Promise<SubSession | undefined> {
+  if (!sess.refreshToken) return undefined
+  const url = provider === 'claude' ? CLAUDE_TOKEN_URL : CODEX_TOKEN_URL
+  const clientId = provider === 'claude' ? CLAUDE_CLIENT_ID : CODEX_CLIENT_ID
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: sess.refreshToken, client_id: clientId }),
+      signal: AbortSignal.timeout(15_000),
+    })
+    const body: any = await resp.json().catch(() => undefined)
+    if (!resp.ok) return isPermanentOAuthError(body) ? undefined : sess
+    const accessToken = normStr(body?.access_token)
+    if (!accessToken) return sess
+    const next: SubSession = { ...sess, accessToken }
+    const refreshToken = normStr(body?.refresh_token)
+    if (refreshToken) next.refreshToken = refreshToken
+    const expiresIn = num(body?.expires_in)
+    if (expiresIn !== undefined && expiresIn > 0) {
+      next.expiresAt = Date.now() + expiresIn * 1000
+    } else {
+      const exp = decodeJwtExp(accessToken)
+      if (exp !== undefined) next.expiresAt = exp * 1000
+    }
+    return next
+  } catch {
+    return sess
+  }
+}
+
+/** In-flight refresh coalescing per provider+account (upstream TokenManager parity). */
+const refreshInflight = new Map<string, Promise<SubSession | undefined>>()
+
+/**
+ * Resolve a usable session, refreshing proactively inside the preempt window
+ * (upstream TokenManager.session parity). Sessions without expiry metadata
+ * (DSH-creds / CLI tokens) are used as-is — there is no grant to refresh.
+ */
+async function ensureFreshSubSession(provider: 'claude' | 'codex', key: string, sess: SubSession): Promise<SubSession | undefined> {
+  if (sess.expiresAt === undefined) return sess
+  if (sess.expiresAt - Date.now() > SUB_PREEMPT_MS) return sess
+  if (!sess.refreshToken) return sess.expiresAt > Date.now() ? sess : undefined
+  const flightKey = `${provider}:${key || 'default'}`
+  let p = refreshInflight.get(flightKey)
+  if (!p) {
+    p = (async () => {
+      const fresh = await refreshSubSession(provider, sess)
+      if (fresh && fresh !== sess) {
+        try { await writeSubSession(provider, key, fresh) } catch { /* keep in-memory */ }
+      }
+      return fresh
+    })().finally(() => { refreshInflight.delete(flightKey) })
+    refreshInflight.set(flightKey, p)
+  }
+  return p
+}
+
 /** Token resolution order per SPIKE §2.1 (DSH creds → session files → CLI files). */
 async function claudeToken(credentials: any): Promise<string | undefined> {
   const s = await resolveSecret(credentials, ['CLAUDE_ACCESS_TOKEN', 'CLAUDE_API_KEY', 'ANTHROPIC_API_KEY'], [])
   if (s) return s.value
-  const sub = await readJsonFile(join(homedir(), '.dsh', 'plugins', 'subscriptions', 'auth.json'))
-  const t1 = sub?.claude?.access_token ?? sub?.claude?.accessToken
-  if (typeof t1 === 'string' && t1) return t1
+  const stored = await readSubSession('claude')
+  if (stored) {
+    const fresh = await ensureFreshSubSession('claude', stored.key, stored.session)
+    if (fresh) return fresh.accessToken
+  }
   const dir = process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), '.claude')
   const cli = await readJsonFile(join(dir, '.credentials.json'))
   const t2 = cli?.claudeAiOauth?.accessToken
   return typeof t2 === 'string' && t2 ? t2 : undefined
 }
 
-async function codexToken(credentials: any): Promise<string | undefined> {
+async function codexToken(credentials: any): Promise<{ token: string; accountId?: string } | undefined> {
   const s = await resolveSecret(credentials, ['OPENAI_ACCESS_TOKEN', 'OPENAI_API_KEY'], [])
-  if (s) return s.value
-  const sub = await readJsonFile(join(homedir(), '.dsh', 'plugins', 'subscriptions', 'auth.json'))
-  const t1 = sub?.codex?.access_token ?? sub?.codex?.accessToken
-  if (typeof t1 === 'string' && t1) return t1
+  if (s) return { token: s.value }
+  const stored = await readSubSession('codex')
+  if (stored) {
+    const fresh = await ensureFreshSubSession('codex', stored.key, stored.session)
+    if (fresh) return { token: fresh.accessToken, ...(fresh.accountId ? { accountId: fresh.accountId } : {}) }
+  }
   const cli = await readJsonFile(join(homedir(), '.codex', 'auth.json'))
   const t2 = cli?.tokens?.access_token
-  return typeof t2 === 'string' && t2 ? t2 : undefined
+  return typeof t2 === 'string' && t2 ? { token: t2 } : undefined
 }
 
 async function opencodeGoToken(credentials: any, apiKeyEnv: string): Promise<string | undefined> {
@@ -154,7 +331,50 @@ const num = (v: unknown): number | undefined =>
 /** Anthropic throttles the OAuth usage endpoint per token. The same token is
  *  polled by the CLI, WezTerm quota widgets and this overlay, so 429s happen.
  *  While cooling down we fail fast without another network call. */
+/** Fallback when Claude Code is absent (upstream CLAUDE_CLI_FALLBACK_VERSION). */
+const CLAUDE_CLI_FALLBACK_VERSION = '2.1.263'
+
+/**
+ * Detected CLI version, memoized (upstream detectClaudeVersion parity: the
+ * probe shells out, so it must not run at module-evaluation time).
+ */
+function detectClaudeCliVersion(): string {
+  const probes: Array<[string, string[], { shell?: boolean }]> =
+    process.platform === 'win32'
+      ? [['claude --version', [], { shell: true }], ['claude.cmd --version', [], { shell: true }]]
+      : [['claude', ['--version'], {}]]
+  for (const [command, args, options] of probes) {
+    try {
+      const raw = execFileSync(command, [...args], {
+        timeout: 10_000,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        ...options,
+      })
+      const match = String(raw).match(/(\d+\.\d+\.\d+)/)
+      if (match) return match[1]
+    } catch { /* next probe */ }
+  }
+  return CLAUDE_CLI_FALLBACK_VERSION
+}
+
+let claudeCliUserAgent: string | undefined
+/**
+ * CLI-impersonating User-Agent (upstream getClaudeCliUserAgent parity:
+ * `claude-cli/<version> (external, cli)`). Unrecognized clients are
+ * aggressively rate-limited on the OAuth usage endpoint.
+ */
+function getClaudeCliUserAgent(): string {
+  if (claudeCliUserAgent === undefined) {
+    claudeCliUserAgent = `claude-cli/${detectClaudeCliVersion()} (external, cli)`
+  }
+  return claudeCliUserAgent
+}
+
 let claudeCooldownUntil = 0
+import { mapClaudeUsage } from './claude-usage.js'
+export { mapClaudeUsage }
+
 async function fetchClaude(token: string): Promise<ProviderRow> {
   const limited = (): ProviderRow => ({
     id: 'claude', label: 'Claude', status: 'error',
@@ -167,7 +387,8 @@ async function fetchClaude(token: string): Promise<ProviderRow> {
         Authorization: `Bearer ${token}`,
         'anthropic-beta': 'oauth-2025-04-20',
         'Content-Type': 'application/json',
-        'User-Agent': 'claude-cli/2.1.20',
+        'User-Agent': getClaudeCliUserAgent(),
+        Accept: 'application/json',
       },
       signal: AbortSignal.timeout(20_000),
     })
@@ -188,30 +409,22 @@ async function fetchClaude(token: string): Promise<ProviderRow> {
       return { id: 'claude', label: 'Claude', status: 'error', message: auth ? 'auth failed — re-login in Subscriptions settings' : `HTTP ${resp.status}`, items: [] }
     }
     const b: any = await resp.json()
-    const items: QuotaItem[] = []
-    const push = (label: string, w: any) => {
-      const pct = num(w?.utilization)
-      if (pct !== undefined) items.push({ label, percent: pct, resetAt: typeof w?.resets_at === 'string' ? w.resets_at : undefined })
-    }
-    push('5h', b?.five_hour)
-    push('7d', b?.seven_day)
-    for (const lim of Array.isArray(b?.limits) ? b.limits : []) {
-      const kind = String(lim?.kind ?? '')
-      // session = current-session meter (not needed); weekly_all duplicates 7d
-      if (kind === 'session' || kind === 'weekly_all') continue
-      const pct = num(lim?.percent)
-      if (pct !== undefined) items.push({ label: kind === 'weekly_scoped' ? 'Fable' : kind, percent: pct, resetAt: typeof lim?.resets_at === 'string' ? lim.resets_at : undefined })
-    }
-    return { id: 'claude', label: 'Claude', status: 'ok', items }
+    return { id: 'claude', label: 'Claude', status: 'ok', items: mapClaudeUsage(b) }
   } catch (err) {
     return { id: 'claude', label: 'Claude', status: 'error', message: err instanceof Error ? err.message : String(err), items: [] }
   }
 }
 
-async function fetchCodex(token: string): Promise<ProviderRow> {
+async function fetchCodex(token: string, accountId?: string): Promise<ProviderRow> {
   try {
     const resp = await fetch('https://chatgpt.com/backend-api/wham/usage', {
-      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' },
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+        'User-Agent': 'Mozilla/5.0',
+        originator: 'codex_cli_rs',
+        ...(accountId ? { 'chatgpt-account-id': accountId } : {}),
+      },
       signal: AbortSignal.timeout(15_000),
     })
     if (!resp.ok) {
@@ -405,7 +618,7 @@ class OverlayController {
     return this.getScope()?.get() ?? {
       enabled: true, pollMinutes: 5, alertPct: 85,
       providers: { claude: true, codex: true, opencodeGo: true, commandcode: true },
-      commandcodeMonthlyBudget: 0, overlay: { mode: 'pill', hotkey: 'Ctrl+Shift+S' }, burn: {},
+      commandcodeMonthlyBudget: 0, overlay: { mode: 'pill', hotkey: 'Ctrl+Shift+S', display: 'dock' }, burn: {},
     }
   }
   private llmProvider(id: string) { return this.getLlmProviders().find((p) => p.id === id) }
@@ -458,7 +671,7 @@ class OverlayController {
       (async (): Promise<ProviderRow> => {
         if (!cfg.providers.codex) return off('codex', 'Codex')
         const t = await codexToken(creds)
-        return t ? fetchCodex(t) : { id: 'codex', label: 'Codex', status: 'error', message: 'no token — login via Subscriptions settings', items: [] }
+        return t ? fetchCodex(t.token, t.accountId) : { id: 'codex', label: 'Codex', status: 'error', message: 'no token — login via Subscriptions settings', items: [] }
       })(),
       (async (): Promise<ProviderRow> => {
         if (!cfg.providers.opencodeGo) return off('opencode-go', 'OpenCode Go')
@@ -529,7 +742,7 @@ interface SettingsPatch {
   alertPct?: number
   providers?: { claude?: boolean; codex?: boolean; opencodeGo?: boolean; commandcode?: boolean }
   commandcodeMonthlyBudget?: number
-  overlay?: { mode?: 'pill' | 'ring'; hotkey?: string }
+  overlay?: { mode?: 'pill' | 'ring'; hotkey?: string; display?: 'dock' | 'floater' }
 }
 
 export function publicSettings(cfg: Config) {
@@ -604,6 +817,10 @@ export function validateSettingsPatch(patch: unknown): { ok: true; value: Settin
     if (ov.hotkey !== undefined) {
       if (typeof ov.hotkey !== 'string' || !ov.hotkey) return { ok: false, error: 'overlay.hotkey must be a non-empty string' }
       sub.hotkey = ov.hotkey
+    }
+    if (ov.display !== undefined) {
+      if (ov.display !== 'dock' && ov.display !== 'floater') return { ok: false, error: 'overlay.display must be dock|floater' }
+      sub.display = ov.display as 'dock' | 'floater'
     }
     out.overlay = sub
   }

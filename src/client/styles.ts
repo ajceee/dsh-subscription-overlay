@@ -162,3 +162,69 @@ export const PANEL_CSS = `
 .dso-select:focus { border-color: var(--dsw-alias-brand-primary, #5b6cff); }
 .dso-select option { background: var(--dsw-alias-bg-layer-2, #1a1a24); color: var(--dsw-alias-label-primary, #eee); }
 `;
+
+export const DOCK_STYLE_TAG_ID = 'dsh-subscription-overlay/dock';
+
+export const DOCK_HIDE_TAG_ID = 'dsh-subscription-overlay/dock-hide';
+
+/** Dock pill + dialog chrome. Mirrors the host stats-pill look; all --dsw-* tokens. */
+export const DOCK_CSS = `
+.dso-dock-anchor { display: inline-flex; min-width: 0; max-width: 100%; }
+.dso-dock-pill {
+  position: relative;
+  box-sizing: border-box; max-width: 100%;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 1px 8px; border: none; border-radius: 24px; cursor: pointer;
+  background: transparent; color: var(--dsw-alias-label-tertiary);
+  font: inherit; font-size: var(--dsh-content-font-size-secondary, 13px);
+  font-variant-numeric: tabular-nums; line-height: 20px; white-space: nowrap;
+}
+.dso-dock-pill:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-secondary); }
+.dso-dock-pill .dso-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.dso-dock-label { text-overflow: ellipsis; min-width: 0; overflow: hidden; }
+.dso-dock-dialog {
+  position: fixed; z-index: 1100; box-sizing: border-box;
+  display: flex; flex-direction: column;
+  background: var(--dsw-specific-menu);
+  min-width: min(300px, 100vw - 24px); max-width: min(440px, 100vw - 24px);
+  max-height: min(560px, 100dvh - 24px); overflow-y: auto; overscroll-behavior: contain;
+  box-shadow: var(--dsw-elevation-prominent);
+  color: var(--dsw-alias-label-secondary);
+  border: 0; border-radius: 12px; font-size: 12px; line-height: 18px;
+}
+`;
+
+/**
+ * Hides ONLY the upstream `subscription-usage` pill while our dock badge is
+ * active. The upstream pill is an inline-styled `<button>` (no stable class),
+ * so both selectors fingerprint its mount structure instead of matching bare
+ * dialog buttons (a bare `button[aria-haspopup="dialog"]` selector also kills
+ * the host context + cache pills — never re-add one):
+ *
+ * - Portaled case (host stats row exists): the badge anchors its pill in a
+ *   plain inline-flex `<span>` portaled directly under `[data-composer-stats]`
+ *   (`SubscriptionUsageBadge.js`: `createPortal(pill, statsRow)`, anchor
+ *   `styles.anchor = { minWidth: 0, maxWidth: '100%', display: 'inline-flex' }`).
+ * - In-place case (no stats row): the badge renders an invisible seat
+ *   (`<span aria-hidden="true" style="display:none">`) immediately followed by
+ *   the pill anchor span, both under the dock outlet.
+ *
+ * Both selectors exclude our own pill via `:not([data-dso-dock])`, and this
+ * tag is only mounted while `display === 'dock'` (managed in
+ * `src/client/index.ts`), so disabling dock mode restores the upstream pill.
+ * Safe-failure direction is under-hide: if neither fingerprint matches (new
+ * host markup), the upstream pill reappears instead of hiding something else.
+ * llm-subscriptions itself stays ENABLED so OAuth refresh keeps auth.json alive.
+ *
+ * TODO(live-DOM): confirm against the real composer DOM (unreachable headless:
+ * boot needs DSH_VAULT_PASSWORD, :3081 is token-fenced). If the shell stamps
+ * per-entry ids (e.g. `[data-slot-item="subscription-usage"]`), prefer that.
+ */
+export const DOCK_HIDE_CSS = `
+[data-composer-stats] > span[style*="inline-flex"] > button[aria-haspopup="dialog"][aria-label]:not([data-dso-dock]) {
+  display: none !important;
+}
+[data-slot="conversation.composer.dock"] span[aria-hidden="true"] + span > button[aria-haspopup="dialog"]:not([data-dso-dock]) {
+  display: none !important;
+}
+`;

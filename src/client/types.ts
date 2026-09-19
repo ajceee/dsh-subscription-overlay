@@ -67,7 +67,7 @@ export interface StatusResponse {
   pollMinutes?: number;
   enabled?: boolean;
   providers?: ProviderState[];
-  overlay?: { mode?: 'pill' | 'ring'; hotkey?: string };
+  overlay?: { mode?: 'pill' | 'ring'; hotkey?: string; display?: 'dock' | 'floater' };
   [key: string]: unknown;
 }
 
@@ -83,5 +83,5 @@ export interface SettingsPatch {
     commandcode?: boolean;
   };
   commandcodeMonthlyBudget?: number;
-  overlay?: { mode?: 'pill' | 'ring' };
+  overlay?: { mode?: 'pill' | 'ring'; display?: 'dock' | 'floater' };
 }
