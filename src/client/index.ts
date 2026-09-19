@@ -17,7 +17,7 @@
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime';
 import { DISPLAY_KEY, MODE_KEY, OverlayController, POS_KEY, VISIBLE_KEY } from './controller.ts';
 import { OverlaySettingsSection } from './OverlaySettingsSection.tsx';
-import { DOCK_CSS, DOCK_HIDE_CSS, DOCK_HIDE_TAG_ID, DOCK_STYLE_TAG_ID, PANEL_CSS, STYLE_TAG_ID } from './styles.ts';
+import { DOCK_HIDE_CSS, DOCK_HIDE_TAG_ID, PANEL_CSS, STYLE_TAG_ID } from './styles.ts';
 import { DockBadge } from './DockBadge.tsx';
 import { SubscriptionPanel } from './SubscriptionPanel.tsx';
 
@@ -222,12 +222,7 @@ function setVisible(controller: OverlayController, visible: boolean): void {
 
 /** Inject the panel stylesheet; the returned cleanup removes it on unload. */
 function injectStyles(): () => void {
-  const offPanel = injectStyleTag(STYLE_TAG_ID, PANEL_CSS);
-  const offDock = injectStyleTag(DOCK_STYLE_TAG_ID, DOCK_CSS);
-  return () => {
-    offPanel();
-    offDock();
-  };
+  return injectStyleTag(STYLE_TAG_ID, PANEL_CSS);
 }
 
 /** Inject one plugin stylesheet; the returned cleanup removes it on unload. */

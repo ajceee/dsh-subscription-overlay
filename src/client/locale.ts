@@ -7,9 +7,8 @@
 const strings = {
   'pill.defaultName': 'Subscriptions',
   'pill.title.default': 'View subscription quotas (draggable)',
-  'dock.title': 'Subscription quotas',
-  'dock.unavailable': 'Quota unavailable',
-  'dock.close': 'Close',
+  'dock.title': 'Subscription usage',
+  'dock.moreWindows': 'More quota windows ({count})',
   'pill.title.summary': '{summary} (draggable)',
   'ring.title.focus': '{label} · {item}: {percent}% left (hover pauses carousel, draggable)',
   'panel.title': 'Subscriptions',

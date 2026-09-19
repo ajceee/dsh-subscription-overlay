@@ -163,36 +163,7 @@ export const PANEL_CSS = `
 .dso-select option { background: var(--dsw-alias-bg-layer-2, #1a1a24); color: var(--dsw-alias-label-primary, #eee); }
 `;
 
-export const DOCK_STYLE_TAG_ID = 'dsh-subscription-overlay/dock';
-
 export const DOCK_HIDE_TAG_ID = 'dsh-subscription-overlay/dock-hide';
-
-/** Dock pill + dialog chrome. Mirrors the host stats-pill look; all --dsw-* tokens. */
-export const DOCK_CSS = `
-.dso-dock-anchor { display: inline-flex; min-width: 0; max-width: 100%; }
-.dso-dock-pill {
-  position: relative;
-  box-sizing: border-box; max-width: 100%;
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 1px 8px; border: none; border-radius: 24px; cursor: pointer;
-  background: transparent; color: var(--dsw-alias-label-tertiary);
-  font: inherit; font-size: var(--dsh-content-font-size-secondary, 13px);
-  font-variant-numeric: tabular-nums; line-height: 20px; white-space: nowrap;
-}
-.dso-dock-pill:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-secondary); }
-.dso-dock-pill .dso-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-.dso-dock-label { text-overflow: ellipsis; min-width: 0; overflow: hidden; }
-.dso-dock-dialog {
-  position: fixed; z-index: 1100; box-sizing: border-box;
-  display: flex; flex-direction: column;
-  background: var(--dsw-specific-menu);
-  min-width: min(300px, 100vw - 24px); max-width: min(440px, 100vw - 24px);
-  max-height: min(560px, 100dvh - 24px); overflow-y: auto; overscroll-behavior: contain;
-  box-shadow: var(--dsw-elevation-prominent);
-  color: var(--dsw-alias-label-secondary);
-  border: 0; border-radius: 12px; font-size: 12px; line-height: 18px;
-}
-`;
 
 /**
  * Hides ONLY the upstream `subscription-usage` pill while our dock badge is

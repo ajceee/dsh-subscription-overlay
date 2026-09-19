@@ -12,14 +12,16 @@ import {
 } from '../src/client/controller.ts';
 import {
   dockCompactSegment,
-  dockFillClass,
+  dockPreviewWindows,
+  DOCK_WINDOW_PREVIEW_LIMIT,
   dockResetParts,
   dockUsageBarColor,
   dockUsedPercent,
   dockWindowLabel,
 } from '../src/client/dock-labels.ts';
 import type { ProviderState } from '../src/client/types.ts';
-import { DOCK_CSS, DOCK_HIDE_CSS } from '../src/client/styles.ts';
+import { DOCK_HIDE_CSS } from '../src/client/styles.ts';
+import * as stylesModule from '../src/client/styles.ts';
 import { mapClaudeUsage } from '../src/claude-usage.ts';
 
 const NOW = Date.parse('2026-09-18T00:00:00.000Z');
@@ -59,12 +61,24 @@ describe('dock label helpers (upstream parity)', () => {
     assert.equal(dockUsageBarColor(95), 'var(--dsw-alias-state-error-primary)');
   });
 
-  it('fillClass follows the host alert threshold', () => {
-    assert.equal(dockFillClass(90, 85), 'dso-item-fill--danger');
-    assert.equal(dockFillClass(70, 85), 'dso-item-fill--warn');
-    assert.equal(dockFillClass(10, 85), 'dso-item-fill--ok');
+  it('bar fills are flat usageBarColor steps (no gradients)', () => {
+    // Upstream-exact dialog bars resolve to bare --dsw-* tokens; the dock
+    // badge must never paint gradient fills.
+    for (const pct of [0, 10, 79, 80, 94, 95, 100]) {
+      const color = dockUsageBarColor(pct);
+      assert.ok(color.startsWith('var(--dsw-'), `pct ${pct} resolves off-token: ${color}`);
+      assert.ok(!color.includes('gradient'), `pct ${pct} must not use a gradient`);
+    }
   });
 
+  it('preview shows the first 4 windows, rest collapse into overflow', () => {
+    const items = [0, 1, 2, 3, 4, 5].map((n) => ({ label: `w${n}`, percent: n }));
+    const { shown, hidden } = dockPreviewWindows(items);
+    assert.equal(DOCK_WINDOW_PREVIEW_LIMIT, 4);
+    assert.deepEqual(shown.map((i) => i.label), ['w0', 'w1', 'w2', 'w3']);
+    assert.deepEqual(hidden.map((i) => i.label), ['w4', 'w5']);
+    assert.deepEqual(dockPreviewWindows(items.slice(0, 2)).hidden, []);
+  });
   it('resetParts tolerates ISO, epoch ms and epoch seconds', () => {
     assert.equal(dockResetParts('2026-09-20T00:00:00.000Z')?.ms, Date.parse('2026-09-20T00:00:00.000Z'));
     assert.equal(dockResetParts(1789766676217)?.ms, 1789766676217);
@@ -175,8 +189,16 @@ describe('hide selector scoping (t4/BUG 1)', () => {
     );
   });
 
-  it('dock chrome uses no unitless lengths (t3/R1)', () => {
-    assert.ok(!/border-radius:\s*\d+;/.test(DOCK_CSS), 'unitless border-radius in DOCK_CSS');
+  it('dock custom stylesheet is deleted (t10 upstream-exact chrome)', () => {
+    // The DOCK_CSS export (custom pill/dialog/dot/gradient classes) is gone;
+    // dock chrome lives in DockBadge.tsx as upstream-exact inline styles.
+    assert.ok(!('DOCK_CSS' in stylesModule), 'DOCK_CSS export must stay deleted');
+    assert.ok(!('DOCK_STYLE_TAG_ID' in stylesModule), 'dock style tag must stay deleted');
+    // The dock pill + dialog are inline-styled upstream mirrors; no
+    // `.dso-dock-*` custom classes may exist anywhere in the hide sheet.
+    assert.ok(!DOCK_HIDE_CSS.includes('.dso-dock-'), 'custom dock classes must stay deleted');
+    assert.ok(!DOCK_HIDE_CSS.includes('.dso-dot'), 'status-dot styling must stay deleted');
+    assert.ok(!DOCK_HIDE_CSS.includes('gradient'), 'gradient styling must stay deleted');
   });
 });
 

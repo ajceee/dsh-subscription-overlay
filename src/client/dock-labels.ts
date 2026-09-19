@@ -28,13 +28,14 @@ export function dockUsageBarColor(percent: number): string {
   return 'var(--dsw-alias-state-success-primary)';
 }
 
-/** Fill class for a 0–100 percent against the host alert threshold (panel parity). */
-export function dockFillClass(percent: number, alertPct: number): string {
-  if (percent >= alertPct) return 'dso-item-fill--danger';
-  if (percent >= 60) return 'dso-item-fill--warn';
-  return 'dso-item-fill--ok';
-}
+/** Max windows shown before the overflow collapses into a <details> block. */
+export const DOCK_WINDOW_PREVIEW_LIMIT = 4;
 
+/** Split items into preview rows + overflow (upstream previewWindows parity). */
+export function dockPreviewWindows(items: StatusItem[]): { shown: StatusItem[]; hidden: StatusItem[] } {
+  const list = Array.isArray(items) ? items : [];
+  return { shown: list.slice(0, DOCK_WINDOW_PREVIEW_LIMIT), hidden: list.slice(DOCK_WINDOW_PREVIEW_LIMIT) };
+}
 /** Normalize a reset instant (ISO string or epoch ms/s) to epoch ms. */
 export function dockResetParts(resetAt: unknown): { ms: number } | undefined {
   if (typeof resetAt === 'number' && Number.isFinite(resetAt) && resetAt > 0) {

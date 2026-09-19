@@ -1,30 +1,30 @@
 /**
  * Composer-dock badge replacing the subscriptions pill.
  *
- * Collapsed, it reads one compact segment per ok provider
- * ("Codex 6d1h 25%", see `dock-labels.ts` — upstream `compactSegment`
- * parity); clicking it opens a trigger-anchored dialog listing every
- * non-disabled provider (claude, codex, opencode-go, commandcode) with
- * progress bars and reset times. Tolerant states: errors render inline
- * with their message, display-only rows (e.g. commandcode plan) render
- * without a bar, and a fake percentage is never fabricated (percent must
- * be a finite number to paint).
+ * Visual mirror of upstream `SubscriptionUsageBadge` (pixel-for-pixel chrome;
+ * only the data source stays ours): collapsed pill `span > button` with the
+ * stats icon + compact segments, portaled onto the host `[data-composer-stats]`
+ * row with an in-place fallback, and a trigger-anchored `role="dialog"`
+ * listing every provider with `dl`-grid window rows, flat usage bars, and a
+ * 4-window preview + `<details>` overflow. No status dot, no gradients.
  *
  * Mount rules (the registration stays mounted; the component gates):
- * renders null while the plugin is disabled/hidden, while
- * `display !== 'dock'`, or while no provider rows exist.
+ * renders null while the plugin is disabled/hidden or while
+ * `display !== 'dock'`; renders the invisible seat alone while no provider
+ * reports usable windows (same as upstream).
  *
  * @module dsh-subscription-overlay/client/DockBadge
  */
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  alertCount,
-  type OverlaySnapshot,
-} from './controller.ts';
+  IconDataOutline16,
+  useAnchoredPosition,
+  useDismissOnOutsidePointer,
+} from '@deepseek-ai/dsh-client-ui-primitives';
 import {
   dockCompactSegment,
-  dockFillClass,
+  dockPreviewWindows,
   dockResetParts,
   dockUsageBarColor,
   dockUsedPercent,
@@ -34,49 +34,12 @@ import { browserLang, translate } from './locale.ts';
 import type { ProviderState, StatusItem } from './types.ts';
 import type { SubscriptionPanelFace } from './SubscriptionPanel.tsx';
 
-/** Viewport margin kept around the dialog while clamping. */
-const DIALOG_MARGIN = 12;
-/** Gap between the pill's top edge and the dialog's bottom edge. */
-const DIALOG_GAP = 8;
+/** Distance between the trigger's top edge and the dialog's bottom. */
+const PANEL_GAP = 8;
+/** Distance kept between the dialog and each viewport edge. */
+const PANEL_MARGIN = 12;
 
 type T = (key: Parameters<typeof translate>[1], params?: Record<string, string | number>) => string;
-
-/** Pill status dot from the provider set (panel `dotClass` parity). */
-function dotClass(state: OverlaySnapshot): string {
-  if (state.providers.length === 0) return 'dso-dot--idle';
-  if (state.providers.some((p) => p.status === 'ok')) {
-    return state.providers.some((p) => p.status !== 'ok' && p.status !== 'disabled')
-      ? 'dso-dot--warn'
-      : 'dso-dot--ok';
-  }
-  return 'dso-dot--err';
-}
-
-function badgeClass(status: ProviderState['status']): string {
-  switch (status) {
-    case 'ok':
-      return 'dso-badge--ok';
-    case 'disabled':
-      return 'dso-badge--disabled';
-    case 'loading':
-      return 'dso-badge--loading';
-    default:
-      return 'dso-badge--error';
-  }
-}
-
-/** Compact reset label; tolerates ISO strings and epoch ms/s. */
-function resetText(resetAt: StatusItem['resetAt'], t: T): string {
-  const parsed = dockResetParts(resetAt);
-  if (parsed === undefined) return '';
-  const d = new Date(parsed.ms);
-  if (Number.isNaN(d.getTime())) return '';
-  const sameDay = d.toDateString() === new Date().toDateString();
-  const time = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  return sameDay
-    ? t('reset.today', { time })
-    : t('reset.day', { date: `${d.getMonth() + 1}/${d.getDate()}`, time });
-}
 
 /** The composer-dock quota badge + dialog entry. */
 export function DockBadge(props: SubscriptionPanelFace): React.JSX.Element | null {
@@ -85,97 +48,77 @@ export function DockBadge(props: SubscriptionPanelFace): React.JSX.Element | nul
   const t: T = (key, params) => translate(lang, key, params);
   const [open, setOpen] = useState(false);
   const [hover, setHover] = useState(false);
-  const anchorRef = useRef<HTMLSpanElement | null>(null);
+  const rootRef = useRef<HTMLSpanElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
-  const [anchorTop, setAnchorTop] = useState<number | null>(null);
-  const [anchorLeft, setAnchorLeft] = useState<number | null>(null);
+  // Always-rendered, invisible marker in the dock: locates the composer bar
+  // (and the host stats row inside it) even while the pill itself is portaled.
+  const seatRef = useRef<HTMLSpanElement | null>(null);
 
-  // Measure the pill while the dialog is open so the panel anchors above it.
+  const pos = useAnchoredPosition({
+    open,
+    anchorRef: rootRef,
+    panelRef,
+    side: 'top',
+    gap: PANEL_GAP,
+    margin: PANEL_MARGIN,
+  });
+  useDismissOnOutsidePointer(rootRef, open, setOpen, panelRef);
   useEffect(() => {
     if (!open) return;
-    const measure = (): void => {
-      const rect = anchorRef.current?.getBoundingClientRect();
-      if (rect) {
-        setAnchorTop(rect.top);
-        setAnchorLeft(rect.left);
-      }
-    };
-    measure();
-    window.addEventListener('resize', measure);
-    return () => {
-      window.removeEventListener('resize', measure);
-    };
-  }, [open ]);
-
-  // Dismiss on Escape / outside pointer (upstream `useDismissOnOutsidePointer` parity).
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (event: KeyboardEvent): void => {
+    const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') setOpen(false);
     };
-    const onPointer = (event: PointerEvent): void => {
-      const target = event.target as Node | null;
-      if (
-        target !== null &&
-        panelRef.current !== null &&
-        !panelRef.current.contains(target) &&
-        anchorRef.current !== null &&
-        !anchorRef.current.contains(target)
-      ) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener('keydown', onKey);
-    document.addEventListener('pointerdown', onPointer);
+    document.addEventListener('keydown', onKeyDown);
     return () => {
-      document.removeEventListener('keydown', onKey);
-      document.removeEventListener('pointerdown', onPointer);
+      document.removeEventListener('keydown', onKeyDown);
     };
   }, [open ]);
 
-  // Mount rules: plugin off/hidden, floater mode, or no rows → no pill.
+  // Sit on the host's stats row when there is one (same bounded scope and
+  // watcher as upstream); older hosts without it keep the in-place row.
+  const [statsRow, setStatsRow] = useState<Element | null>(null);
+  useEffect(() => {
+    const seat = seatRef.current;
+    if (seat === null) return;
+    const scope = statsScopeOf(seat);
+    if (scope === null) return;
+    const find = (): Element | null => scope.querySelector('[data-composer-stats]');
+    setStatsRow(find());
+    const observer = new MutationObserver(() => {
+      setStatsRow(find());
+    });
+    observer.observe(scope, { childList: true, subtree: true });
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+
+  // Mount rules: plugin off/hidden or floater mode → no pill, no seat.
   if (!state.visible || !state.enabled || state.display !== 'dock') return null;
-  if (state.providers.length === 0) return null;
+  const seat = <span ref={seatRef} style={upStyles.seat} aria-hidden="true" />;
+  // The pill reads providers with usable windows only, like upstream.
+  const shown = state.providers.filter(
+    (p) => p.status === 'ok' && (p.items ?? []).some((i) => dockUsedPercent(i) !== undefined),
+  );
+  if (shown.length === 0) return seat;
 
-  const okProviders = state.providers.filter((p) => p.status === 'ok');
-  const label =
-    okProviders.length > 0
-      ? okProviders.map((p) => dockCompactSegment(p)).join(' | ')
-      : t('dock.unavailable');
-  const alerts = alertCount(state);
+  const label = shown.map((p) => dockCompactSegment(p)).join(' | ');
+  const title = t('dock.title');
   const busy = state.busy;
-  const okCount = okProviders.length;
-  const totalCount = state.providers.length;
-
   const toggle = (): void => {
-    const next = !open;
-    setOpen(next);
+    setOpen(!open);
   };
 
-  const vw = typeof window === 'undefined' ? 1024 : window.innerWidth;
-  const vh = typeof window === 'undefined' ? 768 : window.innerHeight;
-  const dialogWidth = Math.min(400, vw - DIALOG_MARGIN * 2);
-  const dialogLeft = Math.max(
-    DIALOG_MARGIN,
-    Math.min(anchorLeft ?? vw - dialogWidth - DIALOG_MARGIN, vw - dialogWidth - DIALOG_MARGIN),
-  );
-  // Bottom-anchored so the panel grows upward from above the pill.
-  const dialogBottom = Math.max(
-    DIALOG_MARGIN,
-    vh - (anchorTop ?? vh - DIALOG_MARGIN) + DIALOG_GAP,
-  );
-
   const pill = (
-    <span ref={anchorRef} className="dso-dock-anchor">
+    <span ref={rootRef} style={upStyles.anchor}>
       <button
         type="button"
         data-dso-dock="1"
-        className="dso-dock-pill"
-        style={hover || open ? { background: 'var(--dsw-alias-interactive-bg-hover)' } : undefined}
+        style={{ ...upStyles.pill, ...(hover || open ? upStyles.pillActive : {}) }}
         aria-haspopup="dialog"
         aria-expanded={open}
-        aria-label={label}
-        title={label}
+        aria-label={`${title} · ${label}`}
+        title={title}
         onMouseEnter={() => {
           setHover(true);
         }}
@@ -184,154 +127,273 @@ export function DockBadge(props: SubscriptionPanelFace): React.JSX.Element | nul
         }}
         onClick={toggle}
       >
-        <span className={`dso-dot ${dotClass(state)}`} />
-        <span className="dso-dock-label">{label}</span>
-        {alerts > 0 && <span className="dso-alert">{alerts > 99 ? '99+' : alerts}</span>}
+        <IconDataOutline16 />
+        <span style={upStyles.label}>{label}</span>
       </button>
+      {open &&
+        createPortal(
+          <div ref={panelRef} role="dialog" aria-label={title} style={{ ...upStyles.panel, ...(pos ?? MEASURE_STYLE) }}>
+            <div style={upStyles.title}>
+              <span style={upStyles.titleLabel}>
+                <IconDataOutline16 />
+                {title}
+              </span>
+              <button
+                type="button"
+                style={upStyles.refreshButton}
+                disabled={busy}
+                onClick={() => {
+                  props.refresh();
+                }}
+              >
+                {busy ? t('panel.refreshing') : t('panel.refresh')}
+              </button>
+            </div>
+            <div style={upStyles.titleRule} aria-hidden="true" />
+            {state.providers.map((p, index) => (
+              <DockProviderSection key={p.id} provider={p} first={index === 0} t={t} />
+            ))}
+            {state.formError !== '' && (
+              <div style={upStyles.accountRow}>
+                <span style={upStyles.providerMeta}>{state.formError}</span>
+              </div>
+            )}
+          </div>,
+          document.body,
+        )}
     </span>
   );
-
-  if (!open) return pill;
-
-  const dialog = (
-    <div
-      ref={panelRef}
-      role="dialog"
-      aria-label={t('dock.title')}
-      className="dso-dock-dialog"
-      style={{ width: dialogWidth, left: dialogLeft, bottom: dialogBottom }}
-    >
-      <div className="dso-panel-head">
-        <span className="dso-panel-title">{t('dock.title')}</span>
-        <span style={{ fontSize: 11, opacity: 0.6 }}>
-          {totalCount > 0 ? t('panel.normalCount', { ok: okCount, total: totalCount }) : ''}
-        </span>
-        <button
-          type="button"
-          className="dso-btn dso-btn--primary"
-          disabled={busy}
-          onClick={() => {
-            props.refresh();
-          }}
-        >
-          {busy ? t('panel.refreshing') : t('panel.refresh')}
-        </button>
-        <button
-          type="button"
-          className="dso-btn dso-btn--ghost"
-          aria-label={t('dock.close')}
-          onClick={() => {
-            setOpen(false);
-          }}
-        >
-          ✕
-        </button>
-      </div>
-      <div className="dso-panel-body">
-        {state.loaded && state.providers.length === 0 && (
-          <div className="dso-empty">{t('panel.empty')}</div>
-        )}
-        {state.providers.map((p) => (
-          <DockProviderCard key={p.id} provider={p} state={state} t={t} />
-        ))}
-        {state.formError !== '' && (
-          <div className="dso-provider-msg" style={{ color: '#e74c3c' }}>
-            {state.formError}
-          </div>
-        )}
-      </div>
-      <div className="dso-foot">
-        {state.refreshedAt > 0
-          ? t('panel.footer.refreshedAt', {
-              time: new Date(state.refreshedAt).toLocaleString('en-US'),
-            })
-          : t('panel.footer.never')}
-      </div>
-    </div>
-  );
-
   return (
     <>
-      {pill}
-      {typeof document === 'undefined' ? dialog : createPortal(dialog, document.body)}
+      {seat}
+      {statsRow !== null && statsRow.isConnected ? createPortal(pill, statsRow) : pill}
     </>
   );
 }
 
-function DockProviderCard({
+/**
+ * Nearest ancestor of the dock seat that can contain the host's stats row:
+ * the composer bar. Bounded so a badge in an unfamiliar layout never adopts
+ * some other composer's pills.
+ */
+function statsScopeOf(seat: HTMLSpanElement | null): HTMLElement | null {
+  let node: HTMLElement | null = seat === null ? null : seat.parentElement;
+  for (let depth = 0; node !== null && depth < 4; depth++) {
+    if (node.querySelector('[data-composer-stats]') !== null) return node;
+    node = node.parentElement;
+  }
+  return seat === null ? null : seat.parentElement;
+}
+
+/** One provider section: name row, message line, window rows with preview. */
+function DockProviderSection({
   provider,
-  state,
+  first,
   t,
 }: {
   provider: ProviderState;
-  state: OverlaySnapshot;
+  first: boolean;
   t: T;
 }): React.JSX.Element {
   const items = Array.isArray(provider.items) ? provider.items : [];
+  const { shown, hidden } = dockPreviewWindows(items);
   return (
-    <div className="dso-provider">
-      <div className="dso-provider-head">
-        <span className="dso-provider-name">{provider.label}</span>
-        <span className={`dso-badge ${badgeClass(provider.status)}`}>
-          {t(`status.${provider.status}`)}
-        </span>
+    <section style={first ? undefined : upStyles.section}>
+      <div style={upStyles.providerRow}>
+        <span style={upStyles.providerName}>{provider.label}</span>
+        {provider.status !== 'ok' && (
+          <span style={upStyles.providerMeta}>{t(`status.${provider.status}`)}</span>
+        )}
       </div>
       {provider.message != null && provider.message !== '' && (
-        <span className="dso-provider-msg">{provider.message}</span>
-      )}
-      {provider.status === 'ok' && items.length > 0 && (
-        <div className="dso-items">
-          {items.map((item, i) => (
-            <DockUsageRow key={`${item.label}-${i}`} item={item} alertPct={state.alertPct} t={t} />
-          ))}
+        <div style={upStyles.accountRow}>
+          <span style={upStyles.providerMeta} title={provider.message}>
+            {provider.message}
+          </span>
         </div>
       )}
-      {provider.status === 'ok' && items.length === 0 && (
-        <span className="dso-provider-msg">{t('panel.empty')}</span>
+      {provider.status === 'ok' && items.length > 0 && (
+        <>
+          <dl style={upStyles.details}>
+            {shown.map((item, i) => (
+              <DockWindowRow key={`${item.label}-${i}`} item={item} />
+            ))}
+          </dl>
+          {hidden.length > 0 && (
+            <details style={upStyles.moreWindows}>
+              <summary style={upStyles.moreSummary}>
+                {t('dock.moreWindows', { count: hidden.length })}
+              </summary>
+              <dl style={upStyles.details}>
+                {hidden.map((item, i) => (
+                  <DockWindowRow key={`${item.label}-${i}`} item={item} />
+                ))}
+              </dl>
+            </details>
+          )}
+        </>
       )}
-    </div>
+      {provider.status === 'ok' && items.length === 0 && (
+        <div style={upStyles.accountRow}>
+          <span style={upStyles.providerMeta}>{t('panel.empty')}</span>
+        </div>
+      )}
+    </section>
   );
 }
 
-function DockUsageRow({
-  item,
-  alertPct,
-  t,
-}: {
-  item: StatusItem;
-  alertPct: number;
-  t: T;
-}): React.JSX.Element {
+/** One `dt`/`dd` pair: window name → `25% · 6d1h`, with the bar underneath. */
+function DockWindowRow({ item }: { item: StatusItem }): React.JSX.Element {
   // A percentage paints only when it is a real finite number — display-only
   // rows (commandcode plan/balance) render their preformatted value instead.
   const percent = dockUsedPercent(item);
-  const value =
-    item.display ??
-    (percent !== undefined
-      ? `${percent}%`
-      : item.remaining !== undefined
-        ? t('item.remaining', { n: item.remaining })
-        : '');
-  const reset = resetText(item.resetAt, t);
+  const hasReset = dockResetParts(item.resetAt) !== undefined;
   return (
-    <div className="dso-item">
-      <span className="dso-item-label" title={item.label}>
-        {item.label}
-      </span>
-      {percent !== undefined ? (
-        <span className="dso-item-bar">
-          <span
-            className={`dso-item-fill ${dockFillClass(percent, alertPct)}`}
-            style={{ width: `${String(percent)}%`, background: dockUsageBarColor(percent) }}
-          />
-        </span>
-      ) : (
-        <span className="dso-item-bar" style={{ background: 'transparent' }} />
+    <>
+      <dt style={upStyles.dt}>{item.label}</dt>
+      <dd style={upStyles.dd}>
+        {percent !== undefined ? (
+          <>
+            {percent}%{hasReset && <span style={upStyles.reset}> · {dockWindowLabel(item)}</span>}
+          </>
+        ) : (
+          (item.display ?? '')
+        )}
+      </dd>
+      {percent !== undefined && (
+        <div style={upStyles.bar} aria-hidden="true">
+          <div style={{ ...upStyles.barFill, width: `${String(percent)}%`, background: dockUsageBarColor(percent) }} />
+        </div>
       )}
-      <span className="dso-item-value">
-        {percent !== undefined ? `${dockWindowLabel(item)} ${value}` : value}
-      </span>
-      {reset !== '' && <span className="dso-item-reset">{reset}</span>}
-    </div>
+    </>
   );
 }
+
+/**
+ * Unplaced portal panel: hidden but laid out so the clamp measures real
+ * dimensions (the `useAnchoredPosition` measure pass).
+ */
+const MEASURE_STYLE = { visibility: 'hidden', left: 0, top: 0 } as const;
+
+/**
+ * Upstream-exact chrome (mirrors the host StatsPills pill and stat-dialog
+ * panel): every color resolves through a `--dsw-*` design token, fills are
+ * flat `usageBarColor` steps, no gradients, no custom classes.
+ */
+const upStyles = {
+  seat: { display: 'none' },
+  anchor: { minWidth: 0, maxWidth: '100%', display: 'inline-flex' },
+  pill: {
+    boxSizing: 'border-box',
+    maxWidth: '100%',
+    color: 'var(--dsw-alias-label-tertiary)',
+    font: 'inherit',
+    fontSize: 'var(--dsh-content-font-size-secondary, 13px)',
+    fontVariantNumeric: 'tabular-nums',
+    lineHeight: '20px',
+    whiteSpace: 'nowrap',
+    background: 'transparent',
+    border: 'none',
+    borderRadius: 24,
+    alignItems: 'center',
+    gap: 6,
+    padding: '1px 8px',
+    display: 'inline-flex',
+    cursor: 'pointer',
+  },
+  pillActive: {
+    background: 'var(--dsw-alias-interactive-bg-hover)',
+    color: 'var(--dsw-alias-label-secondary)',
+  },
+  label: { textOverflow: 'ellipsis', minWidth: 0, overflow: 'hidden' },
+  panel: {
+    position: 'fixed',
+    zIndex: 1100,
+    boxSizing: 'border-box',
+    background: 'var(--dsw-specific-menu)',
+    width: 'max-content',
+    minWidth: 'min(300px, 100vw - 24px)',
+    maxWidth: 'min(440px, 100vw - 24px)',
+    maxHeight: 'min(560px, 100dvh - 24px)',
+    overflowY: 'auto',
+    overscrollBehavior: 'contain',
+    boxShadow: 'var(--dsw-elevation-prominent)',
+    color: 'var(--dsw-alias-label-secondary)',
+    cursor: 'default',
+    border: 0,
+    borderRadius: 12,
+    padding: 16,
+    fontSize: 12,
+    lineHeight: '18px',
+  },
+  title: {
+    color: 'var(--dsw-alias-label-primary)',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 16,
+    marginBottom: 8,
+    fontWeight: 500,
+  },
+  titleLabel: { alignItems: 'center', gap: 6, minWidth: 0, display: 'inline-flex' },
+  titleRule: { borderTop: '0.5px solid var(--dsw-alias-border-l2)', marginBottom: 10 },
+  refreshButton: {
+    background: 'transparent',
+    border: 'none',
+    cursor: 'pointer',
+    color: 'var(--dsw-alias-label-secondary)',
+    font: 'inherit',
+    fontSize: 12,
+    padding: 0,
+  },
+  section: { marginTop: 12, paddingTop: 10, borderTop: '0.5px solid var(--dsw-alias-border-l2)' },
+  providerRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'baseline',
+    gap: 16,
+    marginBottom: 6,
+  },
+  providerName: {
+    color: 'var(--dsw-alias-label-primary)',
+    fontWeight: 500,
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+  },
+  providerMeta: {
+    color: 'var(--dsw-alias-label-tertiary)',
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  accountRow: { display: 'flex', marginBottom: 4 },
+  details: {
+    color: 'var(--dsw-alias-label-tertiary)',
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr) max-content',
+    gap: '4px 16px',
+    margin: 0,
+  },
+  moreWindows: { marginTop: 8 },
+  moreSummary: { cursor: 'pointer', color: 'var(--dsw-alias-label-secondary)', marginBottom: 8 },
+  dt: { minWidth: 0, margin: 0, overflowWrap: 'anywhere' },
+  dd: {
+    minWidth: 0,
+    margin: 0,
+    color: 'var(--dsw-alias-label-secondary)',
+    fontVariantNumeric: 'tabular-nums',
+    textAlign: 'right',
+  },
+  reset: { color: 'var(--dsw-alias-label-tertiary)' },
+  bar: {
+    gridColumn: '1 / -1',
+    height: 4,
+    borderRadius: 2,
+    overflow: 'hidden',
+    background: 'var(--dsw-alias-border-l2)',
+    marginBottom: 2,
+  },
+  barFill: { height: '100%', borderRadius: 2 },
+} as const;
