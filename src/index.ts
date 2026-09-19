@@ -14,6 +14,8 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { applyStaleFallback, isLiveDue, isPersistentHttpStatus, nextLiveDelayMs, resolveStatusSnapshot } from './refresh-cache.js'
+import type { SwrRow } from './refresh-cache.js'
 
 export const name = 'dsh-subscription-overlay'
 export const inject = ['settings']
@@ -57,9 +59,14 @@ export interface ProviderRow {
   id: ProviderId; label: string
   status: 'ok' | 'error' | 'disabled' | 'loading'
   message?: string
+  /** Served from cache after a transient failure (429/cooldown/network). */
+  stale?: boolean
+  /** Host-internal failure class; stripped before sending to clients. */
+  transient?: boolean
   items?: QuotaItem[]
   probe?: { ok: boolean; ms: number; models?: number; message?: string }
   burn?: { monthToDate: number; budget: number; percent: number | null; resetAt: string }
+  [key: string]: unknown
 }
 
 /** Cached parsed credentials yaml (keyed by path, loaded once per process). */
@@ -378,7 +385,7 @@ export { mapClaudeUsage }
 async function fetchClaude(token: string): Promise<ProviderRow> {
   const limited = (): ProviderRow => ({
     id: 'claude', label: 'Claude', status: 'error',
-    message: 'rate limited by Anthropic — retrying automatically', items: [],
+    message: 'rate limited by Anthropic — retrying automatically', items: [], transient: true,
   })
   if (Date.now() < claudeCooldownUntil) return limited()
   try {
@@ -393,7 +400,7 @@ async function fetchClaude(token: string): Promise<ProviderRow> {
       signal: AbortSignal.timeout(20_000),
     })
     if (!resp.ok) {
-      const auth = resp.status === 401 || resp.status === 403
+      const auth = isPersistentHttpStatus(resp.status)
       if (resp.status === 429) {
         // Honor Anthropic's retry-after (seconds or HTTP date), default 60s.
         let waitMs = 60_000
@@ -406,12 +413,12 @@ async function fetchClaude(token: string): Promise<ProviderRow> {
         claudeCooldownUntil = Date.now() + waitMs
         return limited()
       }
-      return { id: 'claude', label: 'Claude', status: 'error', message: auth ? 'auth failed — re-login in Subscriptions settings' : `HTTP ${resp.status}`, items: [] }
+      return { id: 'claude', label: 'Claude', status: 'error', message: auth ? 'auth failed — re-login in Subscriptions settings' : `HTTP ${resp.status}`, items: [], transient: !auth }
     }
     const b: any = await resp.json()
     return { id: 'claude', label: 'Claude', status: 'ok', items: mapClaudeUsage(b) }
   } catch (err) {
-    return { id: 'claude', label: 'Claude', status: 'error', message: err instanceof Error ? err.message : String(err), items: [] }
+    return { id: 'claude', label: 'Claude', status: 'error', message: err instanceof Error ? err.message : String(err), items: [], transient: true }
   }
 }
 
@@ -428,8 +435,8 @@ async function fetchCodex(token: string, accountId?: string): Promise<ProviderRo
       signal: AbortSignal.timeout(15_000),
     })
     if (!resp.ok) {
-      const auth = resp.status === 401 || resp.status === 403
-      return { id: 'codex', label: 'Codex', status: 'error', message: auth ? 'auth failed — re-login in Subscriptions settings' : `HTTP ${resp.status}`, items: [] }
+      const auth = isPersistentHttpStatus(resp.status)
+      return { id: 'codex', label: 'Codex', status: 'error', message: auth ? 'auth failed — re-login in Subscriptions settings' : `HTTP ${resp.status}`, items: [], transient: !auth }
     }
     const b: any = await resp.json()
     const items: QuotaItem[] = []
@@ -458,7 +465,7 @@ async function fetchCodex(token: string, accountId?: string): Promise<ProviderRo
     if (secPct !== undefined) items.push({ label: '7d', percent: secPct, resetAt: secReset })
     return { id: 'codex', label: 'Codex', status: 'ok', items }
   } catch (err) {
-    return { id: 'codex', label: 'Codex', status: 'error', message: err instanceof Error ? err.message : String(err), items: [] }
+    return { id: 'codex', label: 'Codex', status: 'error', message: err instanceof Error ? err.message : String(err), items: [], transient: true }
   }
 }
 
@@ -469,8 +476,8 @@ async function fetchOpencodeGo(token: string): Promise<ProviderRow> {
       signal: AbortSignal.timeout(20_000),
     })
     if (!resp.ok) {
-      const auth = resp.status === 401 || resp.status === 403
-      return { id: 'opencode-go', label: 'OpenCode Go', status: 'error', message: auth ? 'auth failed — re-login in Subscriptions settings' : `HTTP ${resp.status}`, items: [] }
+      const auth = isPersistentHttpStatus(resp.status)
+      return { id: 'opencode-go', label: 'OpenCode Go', status: 'error', message: auth ? 'auth failed — re-login in Subscriptions settings' : `HTTP ${resp.status}`, items: [], transient: !auth }
     }
     const b: any = await resp.json()
     const items: QuotaItem[] = []
@@ -490,7 +497,7 @@ async function fetchOpencodeGo(token: string): Promise<ProviderRow> {
     pushWindow('30d', usage?.monthly,  b?.monthly)
     return { id: 'opencode-go', label: 'OpenCode Go', status: 'ok', items }
   } catch (err) {
-    return { id: 'opencode-go', label: 'OpenCode Go', status: 'error', message: err instanceof Error ? err.message : String(err), items: [] }
+    return { id: 'opencode-go', label: 'OpenCode Go', status: 'error', message: err instanceof Error ? err.message : String(err), items: [], transient: true }
   }
 }
 
@@ -643,48 +650,108 @@ class OverlayController {
     return out
   }
 
-  async refresh(): Promise<{ refreshedAt: number; providers: ProviderRow[]; providerCatalog: ProviderCatalogEntry[] }> {
+  /** Last-good rows per provider id (stale-while-revalidate store). */
+  private lastGood: Record<string, ProviderRow> = {}
+  /** Earliest timestamp for the next live fetch per throttled provider. */
+  private nextLiveAt: Record<string, number> = {}
+  /** Aggregate single-flight: concurrent refresh() calls share one run. */
+  private refreshInflight: Promise<{ refreshedAt: number; providers: ProviderRow[]; providerCatalog: ProviderCatalogEntry[] }> | undefined
+  /** Last served aggregate; GET /status reads this without fetching. */
+  private cached: { refreshedAt: number; providers: ProviderRow[] } | undefined
+
+  /**
+   * Aggregate refresh. Concurrent callers share one in-flight run
+   * (single-flight). Live usage fetches for claude/codex are throttled to
+   * >=15min + jitter unless `force` (explicit Refresh button).
+   */
+  async refresh(opts?: { force?: boolean }): Promise<{ refreshedAt: number; providers: ProviderRow[]; providerCatalog: ProviderCatalogEntry[] }> {
+    if (!this.refreshInflight) {
+      const force = opts?.force === true
+      this.refreshInflight = this.doRefresh(force).finally(() => { this.refreshInflight = undefined })
+    }
+    return this.refreshInflight
+  }
+
+  /** Last served aggregate for GET /status (pure cache serve, never fetches). */
+  cachedSnapshot(): { refreshedAt: number; providers: ProviderRow[] } | undefined {
+    return this.cached
+  }
+
+  /** Strip host-internal failure flags before sending rows to clients. */
+  private static wireRow(row: ProviderRow): ProviderRow {
+    const { transient: _drop, ...rest } = row
+    void _drop
+    return rest
+  }
+
+  /**
+   * One throttled fetch for a single provider: serve last-good when the live
+   * throttle hasn't lapsed, else fetch live and fold through stale fallback.
+   */
+  private async refreshProvider(
+    id: 'claude' | 'codex' | 'opencode-go',
+    label: string,
+    enabled: boolean,
+    force: boolean,
+    now: number,
+    live: () => Promise<ProviderRow>,
+    throttle: boolean,
+  ): Promise<ProviderRow> {
+    if (!enabled) return { id, label, status: 'disabled', items: [] }
+    const lastGood = this.lastGood[id]
+    const due = force || !throttle || isLiveDue(this.nextLiveAt[id], now) || lastGood === undefined
+    if (!due && lastGood !== undefined) return lastGood
+    const fresh = await live()
+    if (throttle) this.nextLiveAt[id] = now + nextLiveDelayMs()
+    const decided = applyStaleFallback(lastGood as SwrRow | undefined, fresh as SwrRow)
+    if (decided.cache !== undefined) this.lastGood[id] = decided.cache as ProviderRow
+    else delete this.lastGood[id]
+    return decided.row as ProviderRow
+  }
+
+  private async doRefresh(force: boolean): Promise<{ refreshedAt: number; providers: ProviderRow[]; providerCatalog: ProviderCatalogEntry[] }> {
     const cfg = this.cfg()
     const creds = this.getCredentials()
     const now = Date.now()
     const off = (id: ProviderId, label: string): ProviderRow => ({ id, label, status: 'disabled', items: [] })
     if (!cfg.enabled) {
+      const providers = [
+        off('claude', 'Claude'),
+        off('codex', 'Codex'),
+        off('opencode-go', 'OpenCode Go'),
+        off('commandcode', 'CommandCode'),
+      ]
+      this.cached = { refreshedAt: now, providers }
       return {
         refreshedAt: now,
-        providers: [
-          off('claude', 'Claude'),
-          off('codex', 'Codex'),
-          off('opencode-go', 'OpenCode Go'),
-          off('commandcode', 'CommandCode'),
-        ],
+        providers,
         providerCatalog: this.providerCatalog(),
       }
     }
     // All four providers fetch in parallel — wall time is the slowest
     // provider, not the sum (previously sequential awaits).
     const [claude, codex, opencodeGo, commandcode] = await Promise.all([
-      (async (): Promise<ProviderRow> => {
-        if (!cfg.providers.claude) return off('claude', 'Claude')
+      this.refreshProvider('claude', 'Claude', cfg.providers.claude, force, now, async () => {
         const t = await claudeToken(creds)
         return t ? fetchClaude(t) : { id: 'claude', label: 'Claude', status: 'error', message: 'no token — login via Subscriptions settings', items: [] }
-      })(),
-      (async (): Promise<ProviderRow> => {
-        if (!cfg.providers.codex) return off('codex', 'Codex')
+      }, true),
+      this.refreshProvider('codex', 'Codex', cfg.providers.codex, force, now, async () => {
         const t = await codexToken(creds)
         return t ? fetchCodex(t.token, t.accountId) : { id: 'codex', label: 'Codex', status: 'error', message: 'no token — login via Subscriptions settings', items: [] }
-      })(),
-      (async (): Promise<ProviderRow> => {
-        if (!cfg.providers.opencodeGo) return off('opencode-go', 'OpenCode Go')
+      }, true),
+      this.refreshProvider('opencode-go', 'OpenCode Go', cfg.providers.opencodeGo, force, now, async () => {
         const env = this.llmProvider('opencode-go')?.apiKeyEnv || 'OPENCODE_GO_API_KEY'
         const t = await opencodeGoToken(creds, env)
         return t ? fetchOpencodeGo(t) : { id: 'opencode-go', label: 'OpenCode Go', status: 'error', message: 'no token — login via Subscriptions settings', items: [] }
-      })(),
+      }, false),
       (async (): Promise<ProviderRow> => {
         if (!cfg.providers.commandcode) return off('commandcode', 'CommandCode')
         return this.commandcodeRow(cfg, creds)
       })(),
     ])
-    return { refreshedAt: now, providers: [claude, codex, opencodeGo, commandcode], providerCatalog: this.providerCatalog() }
+    const providers = [claude, codex, opencodeGo, commandcode].map(OverlayController.wireRow)
+    this.cached = { refreshedAt: now, providers }
+    return { refreshedAt: now, providers, providerCatalog: this.providerCatalog() }
   }
 
   private async commandcodeRow(cfg: Config, creds: any): Promise<ProviderRow> {
@@ -853,11 +920,11 @@ async function route(req: any, res: any, ctrl: OverlayController) {
   const path = new URL(req.url ?? '/', 'http://x').pathname.slice(API_PREFIX.length)
   const method = req.method ?? 'GET'
   try {
-    if (method === 'GET' && path === '/status') return send(res, 200, { ...ctrl.status(), ...(await ctrl.refresh()) })
+    if (method === 'GET' && path === '/status') return send(res, 200, { ...ctrl.status(), ...resolveStatusSnapshot(ctrl.cachedSnapshot()) })
     if (method === 'GET' && path === '/meta') return send(res, 200, { ...ctrl.status(), providerCatalog: ctrl.providerCatalog() })
     if (method === 'POST') {
       if (req.headers[CSRF_HEADER] === undefined) return send(res, 403, { error: 'missing required custom header' })
-      if (path === '/refresh') return send(res, 200, await ctrl.refresh())
+      if (path === '/refresh') return send(res, 200, await ctrl.refresh({ force: true }))
       if (path === '/probe') return send(res, 200, await ctrl.refresh())
       if (path === '/settings') {
         const body = await readJson(req)
@@ -916,4 +983,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.inject(['webServer'], (sctx: any) => {
     registerHttpRoutes(sctx, ctrl)
   })
+  // Warm the cache at boot so the first GET /status (pure cache serve) has
+  // data; later refreshes ride the background cadence above.
+  void ctrl.refresh().catch(() => undefined)
 }

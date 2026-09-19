@@ -43,6 +43,10 @@ export interface ProviderRow {
     label: string;
     status: 'ok' | 'error' | 'disabled' | 'loading';
     message?: string;
+    /** Served from cache after a transient failure (429/cooldown/network). */
+    stale?: boolean;
+    /** Host-internal failure class; stripped before sending to clients. */
+    transient?: boolean;
     items?: QuotaItem[];
     probe?: {
         ok: boolean;
@@ -56,6 +60,7 @@ export interface ProviderRow {
         percent: number | null;
         resetAt: string;
     };
+    [key: string]: unknown;
 }
 import { mapClaudeUsage } from './claude-usage.js';
 export { mapClaudeUsage };

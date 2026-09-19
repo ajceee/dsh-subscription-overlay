@@ -3,7 +3,6 @@
  *
  * Adapted from dsh-quota's QuotaPanel (SPIKE §1, `.dso-` scope): draggable
  * floater persisted (mode + position), alert badge, click toggles the panel
- * with staleness-triggered refresh. Per-provider progress bars + reset times
  * + alert color at the host threshold. Tolerant empty/error states.
  *
  * Acceptance-critical rules (SPIKE §6 amendments):

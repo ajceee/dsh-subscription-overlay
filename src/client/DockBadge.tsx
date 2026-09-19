@@ -150,7 +150,6 @@ export function DockBadge(props: SubscriptionPanelFace): React.JSX.Element | nul
   const toggle = (): void => {
     const next = !open;
     setOpen(next);
-    if (next) props.refresh();
   };
 
   const vw = typeof window === 'undefined' ? 1024 : window.innerWidth;

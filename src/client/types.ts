@@ -55,6 +55,8 @@ export interface ProviderState {
   label: string;
   status: ProviderStatus;
   message?: string;
+  /** Served from cache after a transient failure; values are last-known. */
+  stale?: boolean;
   items?: StatusItem[];
   probe?: ProbeState;
   burn?: BurnState;

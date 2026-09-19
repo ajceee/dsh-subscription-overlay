@@ -3,8 +3,8 @@
  * (/plugins/dsh-subscription-overlay/api) onto a snapshot store.
  *
  * Adapted from dsh-quota's QuotaPanelController (SPIKE §1): fresh minimal
- * surface — status reload, manual refresh, staleness-triggered refresh,
- * probe relay. Polling short-circuits when the overlay is hidden
+ * surface — status reload (pure cache serve), manual refresh, probe relay.
+ * Polling short-circuits when the overlay is hidden
  * (acceptance: hidden toggle unmounts pill AND panel, no background fetch).
  *
  * The store is a real HostObservable (`createSnapshotStore` from
@@ -22,7 +22,7 @@ import type { ProviderState, StatusItem } from './types.ts';
 export interface OverlaySnapshot {
   loaded: boolean;
   busy: boolean;
-  /** Panel open state; pill click flips it and triggers refreshIfStale. */
+  /** Panel open state; pill click flips it and re-reads the served cache. */
   open: boolean;
   /** Overlay visibility: false unmounts pill AND panel, stops polling. */
   visible: boolean;
@@ -56,8 +56,6 @@ export const INITIAL: OverlaySnapshot = {
 };
 
 export const API_PREFIX = '/plugins/dsh-subscription-overlay/api';
-/** Opening the panel auto-refreshes when the snapshot is older than this. */
-export const AUTO_REFRESH_STALE_MS = 300 * 1000;
 
 /** Snapshot store type (HostObservable): created via createSnapshotStore. */
 export type OverlayStore = SnapshotStore<OverlaySnapshot>;
@@ -168,7 +166,7 @@ export class OverlayController {
       toggle: () => {
         const next = !this.store.getSnapshot().open;
         this.patch({ open: next });
-        if (next) void this.reload().then(() => this.refreshIfStale());
+        if (next) void this.reload();
       },
       close: () => this.patch({ open: false }),
       setVisible: (visible: boolean) => {
@@ -197,14 +195,6 @@ export class OverlayController {
         formError: error instanceof Error ? error.message : String(error),
       });
     }
-  }
-
-  /** Refresh when the stored snapshot is stale (called after opening the panel). */
-  async refreshIfStale(): Promise<void> {
-    const { refreshedAt, busy } = this.store.getSnapshot();
-    if (busy) return;
-    const age = refreshedAt > 0 ? Date.now() - refreshedAt : Number.POSITIVE_INFINITY;
-    if (Number.isNaN(age) || age > AUTO_REFRESH_STALE_MS) await this.refresh();
   }
 
   /** Ask the host to re-fetch every provider snapshot. */
