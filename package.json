@@ -37,12 +37,12 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-credentials": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0",
-    "@deepseek-ai/dsh-settings": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0",
-    "@deepseek-ai/dsh-tools": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0",
+    "@deepseek-ai/dsh-credentials": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-settings": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-tools": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.3.0-0",
     "cordis": ">=4.0.0-rc.1 <4.0.0 || >=4.0.0 <5",
     "schemastery": "^3.18.0",
-    "@deepseek-ai/dsh-client-store": ">=0.1.0-rc.1 <0.2.0-0"
+    "@deepseek-ai/dsh-client-store": ">=0.1.0-rc.1 <0.3.0-0"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
