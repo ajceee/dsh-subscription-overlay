@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-subscription-overlay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Toggleable DSH overlay showing quota windows (5h/7d/30d) for Claude, Codex, OpenCode Go and CommandCode.",
   "private": false,
   "type": "module",
