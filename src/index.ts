@@ -1,4 +1,4 @@
-﻿/**
+/**
  * dsh-subscription-overlay — host entry.
  *
  * Fresh-fetch quota aggregation for claude / codex / opencode-go (per
@@ -16,6 +16,12 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { applyStaleFallback, isLiveDue, isPersistentHttpStatus, nextLiveDelayMs, resolveStatusSnapshot } from './refresh-cache.js'
 import type { SwrRow } from './refresh-cache.js'
+import { appendBurnStored, migrateBurn, readBurn } from './burn-store.js'
+
+/** DSH home: honours DSH_HOME (isolated profiles, DSH Desktop), else ~/.dsh. */
+function dshHome(): string {
+  return process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
+}
 
 export const name = 'dsh-subscription-overlay'
 export const inject = ['settings']
@@ -75,7 +81,7 @@ const _credCache: Record<string, Record<string, string> | null> = {}
 /** Read key→value pairs from ~/.dsh/.credentials.yaml without a YAML parser.
  *  Only handles the simple `KEY: value` lines the DSH credentials domain writes. */
 async function readDshCredentials(): Promise<Record<string, string>> {
-  const path = join(homedir(), '.dsh', '.credentials.yaml')
+  const path = join(dshHome(), '.credentials.yaml')
   if (path in _credCache) return _credCache[path] ?? {}
   try {
     const raw = await readFile(path, 'utf8')
@@ -164,7 +170,7 @@ function normSubSession(raw: any): SubSession | undefined {
 }
 
 function subAuthPath(): string {
-  return join(homedir(), '.dsh', 'plugins', 'subscriptions', 'auth.json')
+  return join(dshHome(), 'plugins', 'subscriptions', 'auth.json')
 }
 
 /** Read one provider's default subscription session (accounts-map aware). */
@@ -758,7 +764,7 @@ class OverlayController {
     const llm = this.llmProvider('command-code')
     const keyEnv = llm?.apiKeyEnv || 'COMMAND_CODE_API_KEY'
     const key = await resolveSecret(creds, [keyEnv, 'COMMAND_CODE_API_KEY'], [keyEnv, 'COMMAND_CODE_API_KEY'])
-    const mtd = monthToDate(cfg.burn ?? {})
+    const mtd = monthToDate(await readBurn())
     const budget = cfg.commandcodeMonthlyBudget ?? 0
     const next = new Date(); next.setMonth(next.getMonth() + 1, 1); next.setHours(0, 0, 0, 0)
     const burn = { monthToDate: mtd, budget, percent: budget > 0 ? (mtd / budget) * 100 : null as number | null, resetAt: next.toISOString() }
@@ -788,16 +794,15 @@ class OverlayController {
       overlay: { ...cfg.overlay, ...(parsed.value.overlay ?? {}) },
     }
     await scope.update(stripRuntime(next))
-    return { ok: true as const, settings: publicSettings(this.cfg()) }
+    // On 0.2 the write reloads this plugin, so this.cfg() may still be the old fiber's view.
+    return { ok: true as const, settings: publicSettings(next) }
   }
 
   async ledgerAppend(model: string, tokens: number) {
-    const scope = this.getScope()
-    if (!scope || typeof model !== 'string' || !model || !Number.isFinite(tokens) || tokens < 0) {
+    if (typeof model !== 'string' || !model || !Number.isFinite(tokens) || tokens < 0) {
       return { ok: false as const, error: 'model and non-negative tokens required' }
     }
-    const cfg = this.cfg()
-    await scope.update({ burn: appendBurn(cfg.burn ?? {}, model, tokens) })
+    await appendBurnStored(model, tokens)
     return { ok: true as const }
   }
 }
@@ -942,6 +947,20 @@ async function route(req: any, res: any, ctrl: OverlayController) {
   }
 }
 
+/** 0.2 settings facade: read the composed config, write the profile row via configEditor.
+ *  A write reloads this plugin with the new config, so get() never goes stale. */
+function profileScope(ctx: Context, config: Config) {
+  return {
+    get: (): Config => config,
+    async update(patch: Partial<Config>): Promise<void> {
+      const editor = (ctx as any).get('configEditor')
+      const entry = editor?.entries?.().find((e: any) => e.options?.id === NS)
+      if (!entry) throw new Error('settings unavailable: no editable profile entry for ' + NS)
+      await editor.edit(entry, (current: Record<string, unknown>) => ({ ...current, ...patch }))
+    },
+  }
+}
+
 export function apply(ctx: Context, config: Config): void {
   let scope: any
   let settingsSvc: any
@@ -972,8 +991,14 @@ export function apply(ctx: Context, config: Config): void {
   )
   ctx.inject(['settings'], (sctx: any) => {
     settingsSvc = sctx.settings
-    scope = sctx.settings.register(NS, Config, { base: config })
+    // 0.1 hosts register a settings namespace; 0.2 removed register() and derives
+    // settings from the Config schema, so writes go through configEditor (docs/SETTINGS-0.2.md).
+    scope = typeof sctx.settings?.register === 'function'
+      ? sctx.settings.register(NS, Config, { base: config })
+      : profileScope(ctx, config)
   })
+  // Burn ledger lives in <home>/data/dsh-subscription-overlay/burn.json; seed it once from legacy config.burn.
+  void migrateBurn(config.burn).catch(() => undefined)
   if (config.pollMinutes > 0) {
     ctx.inject(['settings'], () => {
       const timer = setInterval(() => { void ctrl.refresh() }, config.pollMinutes * 60_000)
