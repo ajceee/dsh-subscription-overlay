@@ -17,6 +17,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     'shell.overlay': { kind: 'list'; scope: 'root' };
     /** Settings pages (subscriptions section precedent): ordered list. */
     'settings.section': { kind: 'list'; scope: 'root' };
+    /** DSH 0.2 Settings > Plugins bundle page (keyed by package name). */
+    'plugins.bundle.config': { kind: 'keyed'; scope: 'root' };
     /** Composer dock row (subscriptions pill precedent): session-bound ordered list. */
     'conversation.composer.dock': { kind: 'list'; scope: 'session' };
   }

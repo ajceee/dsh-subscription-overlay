@@ -27,6 +27,9 @@ export const inject = ['slots'];
 /** Plugin id — unique per plugin; the overlay layer composites registrations. */
 const PLUGIN_ID = 'dsh-subscription-overlay';
 
+/** npm package name: key of the 0.2 `plugins.bundle.config` slot. */
+const PACKAGE_NAME = '@dsh-external/dsh-subscription-overlay';
+
 /** Hotkey toggling overlay visibility (no clash with quota's Ctrl+Shift+U/Y). */
 const HOTKEY = 'Ctrl+Shift+S';
 
@@ -180,28 +183,49 @@ export function apply(ctx: ClientContext): void {
     console.error(`[${PLUGIN_ID}] dock-hide effect failed`, error);
   }
 
+  // Settings page. DSH 0.2 renders it on Settings > Plugins via the keyed
+  // `plugins.bundle.config` slot; hosts without that slot fall back to the
+  // legacy `settings.section` registration. Writes always go through the
+  // same-origin host route POST /settings (no host settings service needed).
+  const inject = () => ({
+    hooks: {},
+    setOverlayVisible: (visible: boolean) => {
+      setVisible(controller, visible);
+    },
+  });
+  let bundleOk = false;
   try {
-    ctx.slots.inject('settings.section', () =>
+    ctx.slots.inject('plugins.bundle.config', () =>
       ctx.slots.register(
         {
-          name: 'settings.section',
-          id: PLUGIN_ID,
-          order: 56,
-          label: () => 'Subscription Overlay',
-          inject: () => ({
-            // The section reads/writes through the same-origin host API
-            // (t2 owns validation + persistence); no host service needed.
-            hooks: {},
-            setOverlayVisible: (visible: boolean) => {
-              setVisible(controller, visible);
-            },
-          }),
+          name: 'plugins.bundle.config',
+          key: PACKAGE_NAME,
+          inject,
         },
         OverlaySettingsSection,
       ),
     );
+    bundleOk = true;
   } catch (error) {
-    console.error(`[${PLUGIN_ID}] settings section registration failed`, error);
+    console.warn(`[${PLUGIN_ID}] plugins.bundle.config unavailable, using legacy section`, error);
+  }
+  if (!bundleOk) {
+    try {
+      ctx.slots.inject('settings.section', () =>
+        ctx.slots.register(
+          {
+            name: 'settings.section',
+            id: PLUGIN_ID,
+            order: 56,
+            label: () => 'Subscription Overlay',
+            inject,
+          },
+          OverlaySettingsSection,
+        ),
+      );
+    } catch (error) {
+      console.error(`[${PLUGIN_ID}] settings section registration failed`, error);
+    }
   }
 }
 
