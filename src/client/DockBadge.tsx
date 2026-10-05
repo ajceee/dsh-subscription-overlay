@@ -17,11 +17,16 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import * as Primitives from '@deepseek-ai/dsh-client-ui-primitives';
 import {
-  IconDataOutline16,
   useAnchoredPosition,
   useDismissOnOutsidePointer,
 } from '@deepseek-ai/dsh-client-ui-primitives';
+
+/** 0.1 exports IconDataOutline16; 0.2 renamed it to IconDataOutlineRegular/Medium.
+ *  An undefined element type crashes the whole dock slot (React #130), so resolve at runtime. */
+const IconDataOutline16: (props: Record<string, unknown>) => JSX.Element | null =
+  (Primitives as any).IconDataOutline16 ?? (Primitives as any).IconDataOutlineRegular ?? (() => null);
 import {
   dockCompactSegment,
   dockPreviewWindows,
